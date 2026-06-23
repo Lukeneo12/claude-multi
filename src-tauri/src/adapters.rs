@@ -55,7 +55,7 @@ pub fn find_adapter(id: &str) -> Option<TerminalAdapter> {
 
 pub fn spawn(adapter: &TerminalAdapter, script_path: &str, cwd: &str) -> std::io::Result<()> {
     let args = render_args(&adapter.args, script_path, cwd);
-    Command::new(&adapter.command).args(&args).spawn()?;
+    Command::new(&adapter.command).current_dir(cwd).args(&args).spawn()?;
     Ok(())
 }
 
