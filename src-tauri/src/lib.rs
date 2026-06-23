@@ -6,6 +6,7 @@ use tauri::{
 
 mod paths;
 mod config;
+mod launcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
