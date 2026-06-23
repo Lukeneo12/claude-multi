@@ -8,10 +8,18 @@ mod paths;
 mod config;
 mod launcher;
 mod adapters;
+mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            commands::get_config,
+            commands::save_config,
+            commands::list_terminals,
+            // commands::launch_session,  // added in Task 7
+            // commands::login_account,   // added in Task 7
+        ])
         .setup(|app| {
             let prefs = MenuItemBuilder::with_id("prefs", "Preferences…").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
