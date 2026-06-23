@@ -17,8 +17,8 @@ pub fn run() {
             commands::get_config,
             commands::save_config,
             commands::list_terminals,
-            // commands::launch_session,  // added in Task 7
-            // commands::login_account,   // added in Task 7
+            commands::launch_session,
+            commands::login_account,
         ])
         .setup(|app| {
             let prefs = MenuItemBuilder::with_id("prefs", "Preferences…").build(app)?;
