@@ -7,25 +7,51 @@ pub enum ScriptKind {
     PowerShell,
 }
 
+/// Escapes single quotes for POSIX shell single-quoted strings.
+/// Each `'` in the value becomes `'\''` (close quote, escaped literal, reopen quote).
+fn posix_single_quote_escape(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
+/// Escapes single quotes for PowerShell single-quoted strings.
+/// Each `'` in the value becomes `''` (doubled single quote).
+fn powershell_single_quote_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 pub fn build_script(kind: ScriptKind, config_dir: &str, project_path: &str) -> String {
     match kind {
-        ScriptKind::Posix => format!(
-            "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{config_dir}'\ncd '{project_path}' || exit 1\nexec claude\n"
-        ),
-        ScriptKind::PowerShell => format!(
-            "$env:CLAUDE_CONFIG_DIR = '{config_dir}'\nSet-Location '{project_path}'\nclaude\n"
-        ),
+        ScriptKind::Posix => {
+            let escaped_config = posix_single_quote_escape(config_dir);
+            let escaped_project = posix_single_quote_escape(project_path);
+            format!(
+                "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{escaped_config}'\ncd '{escaped_project}' || exit 1\nexec claude\n"
+            )
+        }
+        ScriptKind::PowerShell => {
+            let escaped_config = powershell_single_quote_escape(config_dir);
+            let escaped_project = powershell_single_quote_escape(project_path);
+            format!(
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\nSet-Location '{escaped_project}'\nclaude\n"
+            )
+        }
     }
 }
 
 pub fn build_login_script(kind: ScriptKind, config_dir: &str) -> String {
     match kind {
-        ScriptKind::Posix => format!(
-            "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{config_dir}'\nexec claude\n"
-        ),
-        ScriptKind::PowerShell => format!(
-            "$env:CLAUDE_CONFIG_DIR = '{config_dir}'\nclaude\n"
-        ),
+        ScriptKind::Posix => {
+            let escaped_config = posix_single_quote_escape(config_dir);
+            format!(
+                "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{escaped_config}'\nexec claude\n"
+            )
+        }
+        ScriptKind::PowerShell => {
+            let escaped_config = powershell_single_quote_escape(config_dir);
+            format!(
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\nclaude\n"
+            )
+        }
     }
 }
 
@@ -34,16 +60,18 @@ pub fn write_script(content: &str, kind: ScriptKind) -> std::io::Result<PathBuf>
         ScriptKind::Posix => "sh",
         ScriptKind::PowerShell => "ps1",
     };
-    // Unique-enough name without Date/random: use process id + content length.
-    let name = format!("claude-multi-{}-{}.{}", std::process::id(), content.len(), ext);
-    let path = std::env::temp_dir().join(name);
-    let mut f = std::fs::File::create(&path)?;
+    let suffix = format!(".{ext}");
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("claude-multi-").suffix(&suffix);
+    let mut f = builder.tempfile()?;  // random name, 0600 on unix, atomic create_new
     f.write_all(content.as_bytes())?;
+    f.flush()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        f.as_file().set_permissions(std::fs::Permissions::from_mode(0o700))?;
     }
+    let (_file, path) = f.keep().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     Ok(path)
 }
 
@@ -73,5 +101,17 @@ mod tests {
         assert!(s.contains("export CLAUDE_CONFIG_DIR='/home/u/.claude-personal'"));
         assert!(!s.contains("cd '"));
         assert!(s.trim_end().ends_with("exec claude"));
+    }
+
+    #[test]
+    fn test_should_escape_single_quote_in_config_dir_when_posix() {
+        let s = build_script(ScriptKind::Posix, "/home/o'brien/.claude", "/repo/app");
+        assert!(s.contains("CLAUDE_CONFIG_DIR='/home/o'\\''brien/.claude'"));
+    }
+
+    #[test]
+    fn test_should_escape_single_quote_when_powershell() {
+        let s = build_script(ScriptKind::PowerShell, r"C:\Users\u\.claude", r"C:\Users\o'brien\repo");
+        assert!(s.contains("Set-Location 'C:\\Users\\o''brien\\repo'"));
     }
 }
