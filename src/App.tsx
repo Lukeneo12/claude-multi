@@ -199,6 +199,9 @@ export default function App() {
                 setProjects(projects);
               }}
             >
+              {!cfg.accounts.some((a) => a.id === p.account) && (
+                <option value="">— account —</option>
+              )}
               {cfg.accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
             <button
