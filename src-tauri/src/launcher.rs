@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Clone, Copy)]
 pub enum ScriptKind {
     Posix,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     PowerShell,
 }
 
@@ -15,6 +16,7 @@ fn posix_single_quote_escape(s: &str) -> String {
 
 /// Escapes single quotes for PowerShell single-quoted strings.
 /// Each `'` in the value becomes `''` (doubled single quote).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn powershell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
@@ -71,7 +73,7 @@ pub fn write_script(content: &str, kind: ScriptKind) -> std::io::Result<PathBuf>
         use std::os::unix::fs::PermissionsExt;
         f.as_file().set_permissions(std::fs::Permissions::from_mode(0o700))?;
     }
-    let (_file, path) = f.keep().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let (_file, path) = f.keep().map_err(std::io::Error::other)?;
     Ok(path)
 }
 

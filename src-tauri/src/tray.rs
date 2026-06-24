@@ -23,7 +23,7 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
 
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
-    let cfg = Config::load(&paths::config_file_path(&app.handle()));
+    let cfg = Config::load(&paths::config_file_path(app.handle()));
     let mut menu = MenuBuilder::new(app);
 
     for account in &cfg.accounts {
