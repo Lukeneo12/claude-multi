@@ -1,5 +1,6 @@
 use crate::{config::Config, commands, paths};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder, PredefinedMenuItem};
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, PartialEq)]
 pub enum MenuAction {
@@ -50,10 +51,14 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             match parse_menu_id(event.id().as_ref()) {
                 MenuAction::Launch { account, project } => {
-                    let _ = commands::launch_session(app.clone(), account, project);
+                    if let Err(msg) = commands::launch_session(app.clone(), account, project) {
+                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                    }
                 }
                 MenuAction::Login { account } => {
-                    let _ = commands::login_account(app.clone(), account);
+                    if let Err(msg) = commands::login_account(app.clone(), account) {
+                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                    }
                 }
                 MenuAction::Prefs => {
                     use tauri::Manager;

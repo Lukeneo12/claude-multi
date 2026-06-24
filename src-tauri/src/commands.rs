@@ -8,6 +8,10 @@ pub fn manual_command(config_dir: &str, project_path: &str) -> String {
     format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"cd '{project_path}' && exec claude\"")
 }
 
+pub fn manual_login_command(config_dir: &str) -> String {
+    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"exec claude\"")
+}
+
 #[derive(Serialize)]
 pub struct TerminalInfo {
     pub id: String,
@@ -75,17 +79,28 @@ pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
 
     let script = launcher::build_login_script(script_kind_for(&adapter), &cd);
     let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd)
-        .map_err(|e| format!("failed to launch terminal '{}': {}", adapter.id, e))
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
+        let cmd = manual_login_command(&cd);
+        let _ = app.clipboard().write_text(cmd);
+        format!(
+            "Couldn't open terminal '{}' for login. The login command was copied to your clipboard — paste it into any terminal.",
+            adapter.id
+        )
+    })
 }
 
 #[cfg(test)]
 mod fallback_tests {
-    use super::manual_command;
+    use super::{manual_command, manual_login_command};
     #[test]
     fn test_should_build_manual_command_when_spawn_fails() {
         let cmd = manual_command("/home/u/.claude-dino", "/repo");
         assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"cd '/repo' && exec claude\"");
+    }
+    #[test]
+    fn test_should_build_manual_login_command_when_spawn_fails() {
+        let cmd = manual_login_command("/home/u/.claude-dino");
+        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"exec claude\"");
     }
 }
 

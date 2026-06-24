@@ -14,7 +14,11 @@ export default function App() {
   if (!config) return <p>Loading…</p>;
 
   const addProject = () => {
-    const idx = config.projects.length + 1;
+    const maxSuffix = config.projects.reduce((max, p) => {
+      const m = p.id.match(/^p(\d+)$/);
+      return m ? Math.max(max, parseInt(m[1], 10)) : max;
+    }, 0);
+    const idx = maxSuffix + 1;
     setConfig({
       ...config,
       projects: [...config.projects, { id: `p${idx}`, label: `Project ${idx}`, path: "" }],
@@ -22,8 +26,12 @@ export default function App() {
   };
 
   const save = async () => {
-    await saveConfig(config);
-    setStatus("Saved — restart to refresh the tray menu.");
+    try {
+      await saveConfig(config);
+      setStatus("Saved — restart to refresh the tray menu.");
+    } catch (e) {
+      setStatus(`Save failed: ${e}`);
+    }
   };
 
   return (

@@ -95,9 +95,9 @@ In **Preferences…**, choose the terminal emulator to use for launching session
 
 App config is stored as `config.json` in the Tauri app-config directory:
 
-- **macOS**: `~/Library/Application Support/com.claude-multi.app/config.json`
-- **Linux**: `~/.config/com.claude-multi.app/config.json`
-- **Windows**: `%APPDATA%\com.claude-multi.app\config.json`
+- **macOS**: `~/Library/Application Support/com.lucasdonadio.claude-multi/config.json`
+- **Linux**: `~/.config/com.lucasdonadio.claude-multi/config.json`
+- **Windows**: `%APPDATA%\com.lucasdonadio.claude-multi\config.json`
 
 You can edit it directly; changes take effect after a restart.
 
