@@ -128,7 +128,7 @@ If the configured terminal can't be opened, the app copies a manual command to t
 
 ```sh
 cd src-tauri
-cargo test                              # 30 unit tests
+cargo test                              # 27 unit tests
 cargo clippy --all-targets -- -D warnings
 ```
 
