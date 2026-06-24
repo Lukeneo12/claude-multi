@@ -15,6 +15,7 @@ pub fn run() {
             commands::save_config,
             commands::list_terminals,
             commands::launch_session,
+            commands::open_session,
             commands::login_account,
             commands::logout_account,
             commands::relogin_account,

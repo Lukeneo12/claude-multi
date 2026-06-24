@@ -98,6 +98,30 @@ pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn open_session(app: AppHandle, account_id: String) -> Result<(), String> {
+    // A session under an account but outside any project: same as launching
+    // `claude` in the account's config dir with no `cd` into a project.
+    let cfg = Config::load(&paths::config_file_path(&app));
+    let account = cfg.account(&account_id).ok_or("unknown account")?;
+    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
+
+    let config_dir = expand_tilde(&account.config_dir);
+    let cd = config_dir.to_string_lossy();
+    std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
+
+    let script = launcher::build_login_script(script_kind_for(&adapter), &cd);
+    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
+        let cmd = manual_login_command(&cd);
+        let _ = app.clipboard().write_text(cmd);
+        format!(
+            "Couldn't open terminal '{}' for the session. The command was copied to your clipboard — paste it into any terminal.",
+            adapter.id
+        )
+    })
+}
+
+#[tauri::command]
 pub fn logout_account(app: AppHandle, account_id: String) -> Result<(), String> {
     let cfg = Config::load(&paths::config_file_path(&app));
     let account = cfg.account(&account_id).ok_or("unknown account")?;

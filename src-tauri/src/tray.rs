@@ -5,6 +5,7 @@ use tauri_plugin_dialog::DialogExt;
 #[derive(Debug, PartialEq)]
 pub enum MenuAction {
     Launch { account: String, project: String },
+    Session { account: String },
     Login { account: String },
     Logout { account: String },
     Relogin { account: String },
@@ -17,6 +18,7 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
     let parts: Vec<&str> = id.split("::").collect();
     match parts.as_slice() {
         ["launch", a, p] => MenuAction::Launch { account: a.to_string(), project: p.to_string() },
+        ["session", a] => MenuAction::Session { account: a.to_string() },
         ["login", a] => MenuAction::Login { account: a.to_string() },
         ["logout", a] => MenuAction::Logout { account: a.to_string() },
         ["relogin", a] => MenuAction::Relogin { account: a.to_string() },
@@ -34,6 +36,8 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
+        // Session under this account, outside any project.
+        sub = sub.item(&MenuItemBuilder::with_id(format!("session::{}", account.id), "New session").build(app)?);
         for project in &cfg.projects {
             let id = format!("launch::{}::{}", account.id, project.id);
             sub = sub.item(&MenuItemBuilder::with_id(id, &project.label).build(app)?);
@@ -78,6 +82,11 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             match parse_menu_id(event.id().as_ref()) {
                 MenuAction::Launch { account, project } => {
                     if let Err(msg) = commands::launch_session(app.clone(), account, project) {
+                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                    }
+                }
+                MenuAction::Session { account } => {
+                    if let Err(msg) = commands::open_session(app.clone(), account) {
                         app.dialog().message(msg).title("claude-multi").show(|_| {});
                     }
                 }
@@ -135,5 +144,10 @@ mod tests {
         assert_eq!(parse_menu_id("logout::dino"), MenuAction::Logout { account: "dino".into() });
         assert_eq!(parse_menu_id("relogin::personal"), MenuAction::Relogin { account: "personal".into() });
         assert_eq!(parse_menu_id("status::dino"), MenuAction::Unknown);
+    }
+
+    #[test]
+    fn test_should_parse_session_id() {
+        assert_eq!(parse_menu_id("session::personal"), MenuAction::Session { account: "personal".into() });
     }
 }
