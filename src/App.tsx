@@ -5,13 +5,38 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
   const [status, setStatus] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    getConfig().then(setConfig);
-    listTerminals().then(setTerminals);
+    // `invoke` only works inside the Tauri webview; in a plain browser the IPC
+    // bridge is absent. Detect that early and show a clear message instead of
+    // throwing uncaught rejections and hanging on "Loading…".
+    const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (!inTauri) {
+      setLoadError("Open this window from the claude-multi tray icon (run `npm run tauri dev`). It can't run in a plain browser.");
+      return;
+    }
+    (async () => {
+      try {
+        const [cfg, terms] = await Promise.all([getConfig(), listTerminals()]);
+        setConfig(cfg);
+        setTerminals(terms);
+      } catch (e) {
+        setLoadError(`Failed to load config: ${e}`);
+      }
+    })();
   }, []);
 
-  if (!config) return <p>Loading…</p>;
+  if (loadError) {
+    return (
+      <main style={{ padding: 16, fontFamily: "system-ui" }}>
+        <h2>claude-multi · Preferences</h2>
+        <p style={{ color: "#b00" }}>{loadError}</p>
+      </main>
+    );
+  }
+
+  if (!config) return <p style={{ padding: 16, fontFamily: "system-ui" }}>Loading…</p>;
 
   const addProject = () => {
     const maxSuffix = config.projects.reduce((max, p) => {
