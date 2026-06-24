@@ -40,6 +40,8 @@ each isolated in its own `CLAUDE_CONFIG_DIR`.
   placeholder in the account dropdown (no more silent "first option" mis-selection).
 - Save-status message clears on window focus and auto-dismisses after a few seconds.
 - Opening the frontend outside Tauri shows guidance instead of hanging on "Loading…".
+- A logged-out account no longer offers **New session** or projects in the tray —
+  only **Login…**, since a session can't start without authentication.
 
 ### Security
 
