@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Account = { id: string; label: string; config_dir: string };
-export type Project = { id: string; label: string; path: string; default_account?: string | null };
+export type Project = { id: string; label: string; path: string; account: string };
 export type Config = { terminal: string; accounts: Account[]; projects: Project[] };
 export type TerminalInfo = { id: string; label: string };
 
