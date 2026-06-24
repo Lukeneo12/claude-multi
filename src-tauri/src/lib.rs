@@ -17,6 +17,16 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::build_tray(app)?;
+            use tauri::{Manager, WindowEvent};
+            if let Some(win) = app.get_webview_window("main") {
+                let win_for_event = win.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win_for_event.hide();
+                    }
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
