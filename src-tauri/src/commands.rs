@@ -2,6 +2,11 @@ use crate::{adapters, config::Config, launcher, paths};
 use crate::paths::expand_tilde;
 use serde::Serialize;
 use tauri::AppHandle;
+use tauri_plugin_clipboard_manager::ClipboardExt;
+
+pub fn manual_command(config_dir: &str, project_path: &str) -> String {
+    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"cd '{project_path}' && exec claude\"")
+}
 
 #[derive(Serialize)]
 pub struct TerminalInfo {
@@ -48,9 +53,13 @@ pub fn launch_session(app: AppHandle, account_id: String, project_id: String) ->
     let script = launcher::build_script(script_kind_for(&adapter), &cd, &pp);
     let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
 
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|e| {
-        // Fallback handled by Task 10 (clipboard); for now surface a clear error.
-        format!("failed to launch terminal '{}': {}", adapter.id, e)
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|_e| {
+        let cmd = manual_command(&cd, &pp);
+        let _ = app.clipboard().write_text(cmd);
+        format!(
+            "Couldn't open terminal '{}'. The launch command was copied to your clipboard — paste it into any terminal.",
+            adapter.id
+        )
     })
 }
 
@@ -68,6 +77,16 @@ pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
     let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd)
         .map_err(|e| format!("failed to launch terminal '{}': {}", adapter.id, e))
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::manual_command;
+    #[test]
+    fn test_should_build_manual_command_when_spawn_fails() {
+        let cmd = manual_command("/home/u/.claude-dino", "/repo");
+        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"cd '/repo' && exec claude\"");
+    }
 }
 
 #[cfg(test)]
