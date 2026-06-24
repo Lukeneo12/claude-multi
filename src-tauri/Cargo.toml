@@ -1,8 +1,9 @@
 [package]
 name = "claude-multi"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Cross-OS system-tray app to run Claude Code under multiple isolated accounts."
+authors = ["Lucas Donadio"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

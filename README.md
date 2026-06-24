@@ -140,8 +140,36 @@ Tests cover config defaults/round-trip and account-email lookup, launcher script
 
 ---
 
+## Build a distributable
+
+```sh
+npm run tauri build
+```
+
+This produces a release bundle **for the OS you build on** (Tauri can't cross-compile native installers), under `src-tauri/target/release/bundle/`:
+
+| OS | Output |
+|---|---|
+| macOS | `claude-multi.app` + `claude-multi_<ver>_<arch>.dmg` |
+| Linux | `.deb` / `.rpm` / `.AppImage` |
+| Windows | `.msi` / `.exe` (NSIS) |
+
+So **each platform builds its own** — clone the repo and run the command on macOS, Linux, and Windows respectively (or wire up CI with per-OS runners later).
+
+**Unsigned builds**: bundles are ad-hoc signed (no Developer ID / notarization), so other machines' Gatekeeper/SmartScreen will warn. On macOS the recipient can right-click → **Open** once, or run `xattr -dr com.apple.quarantine /Applications/claude-multi.app`. Frictionless distribution needs platform code-signing (e.g. Apple Developer ID + notarization via `bundle.macOS.signingIdentity` and the `APPLE_*` env vars) — not set up here.
+
+Useful flags: `--bundles app|dmg|deb|…` to pick targets; `--target universal-apple-darwin` for a universal macOS binary (`rustup target add x86_64-apple-darwin` first).
+
+---
+
+## License
+
+[MIT](LICENSE) © Lucas Donadio.
+
+---
+
 ## Known caveats
 
 - **Warp adapter unverified** (see above).
 - **Linux hover-refresh**: the tray doesn't refresh on hover on Linux (no tray hover events); it still refreshes on save.
-- **Distribution**: v1 runs from a local build; code signing / notarization / installers are not set up yet.
+- **Distribution**: builds are unsigned (see "Build a distributable"); each OS builds its own bundle.

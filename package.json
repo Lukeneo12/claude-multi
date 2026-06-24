@@ -2,6 +2,9 @@
   "name": "claude-multi",
   "private": true,
   "version": "0.1.0",
+  "description": "Cross-OS system-tray app to run Claude Code under multiple isolated accounts.",
+  "author": "Lucas Donadio",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
