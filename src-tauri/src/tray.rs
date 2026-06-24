@@ -72,7 +72,7 @@ fn build_menu(app: &tauri::AppHandle, cfg: &Config) -> tauri::Result<tauri::menu
 }
 
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::tray::TrayIconBuilder;
+    use tauri::tray::{TrayIconBuilder, TrayIconEvent};
     use tauri::Manager;
     let cfg = Config::load(&paths::config_file_path(app.handle()));
     let menu = build_menu(app.handle(), &cfg)?;
@@ -117,6 +117,13 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
                 MenuAction::Quit => app.exit(0),
                 MenuAction::Unknown => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Rebuild the menu when the cursor enters the icon, so login state
+            // (email vs. "Login…") is fresh by the time the menu opens.
+            if let TrayIconEvent::Enter { .. } = event {
+                let _ = refresh_tray(tray.app_handle());
             }
         })
         .build(app)?;
