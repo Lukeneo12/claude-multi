@@ -32,7 +32,15 @@ export default function App() {
     (async () => {
       try {
         const [cfg, terms] = await Promise.all([getConfig(), listTerminals()]);
-        setConfig(cfg);
+        // Heal projects whose account is empty or points at a removed account
+        // (e.g. migrated from the old default_account field): assign them to the
+        // first account so they aren't silently invisible in the tray.
+        const validIds = new Set(cfg.accounts.map((a) => a.id));
+        const firstId = cfg.accounts[0]?.id ?? "";
+        const projects = cfg.projects.map((p) =>
+          validIds.has(p.account) ? p : { ...p, account: firstId }
+        );
+        setConfig({ ...cfg, projects });
         setTerminals(terms);
       } catch (e) {
         setLoadError(`Failed to load config: ${e}`);
