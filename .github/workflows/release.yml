@@ -25,10 +25,10 @@ jobs:
           node-version: lts/*
           cache: npm
 
-      - name: Install Rust (stable + clippy)
+      - name: Install Rust (stable + clippy + rustfmt)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -57,6 +57,10 @@ jobs:
         run: cargo audit
 
       # --- Lint ---
+      - name: Formatting (rustfmt --check)
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
       - name: Typecheck & build frontend (tsc + vite)
         run: npm run build
 
