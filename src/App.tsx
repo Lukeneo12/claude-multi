@@ -1,51 +1,74 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from "react";
+import { Config, TerminalInfo, getConfig, saveConfig, listTerminals } from "./api";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [config, setConfig] = useState<Config | null>(null);
+  const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
+  const [status, setStatus] = useState("");
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    getConfig().then(setConfig);
+    listTerminals().then(setTerminals);
+  }, []);
+
+  if (!config) return <p>Loading…</p>;
+
+  const addProject = () => {
+    const idx = config.projects.length + 1;
+    setConfig({
+      ...config,
+      projects: [...config.projects, { id: `p${idx}`, label: `Project ${idx}`, path: "" }],
+    });
+  };
+
+  const save = async () => {
+    await saveConfig(config);
+    setStatus("Saved — restart to refresh the tray menu.");
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main style={{ padding: 16, fontFamily: "system-ui" }}>
+      <h2>claude-multi · Preferences</h2>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <label>Terminal:{" "}
+        <select value={config.terminal} onChange={(e) => setConfig({ ...config, terminal: e.target.value })}>
+          {terminals.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      </label>
+
+      <h3>Accounts</h3>
+      {config.accounts.map((a, i) => (
+        <div key={a.id}>
+          <input value={a.label} onChange={(e) => {
+            const accounts = [...config.accounts];
+            accounts[i] = { ...a, label: e.target.value };
+            setConfig({ ...config, accounts });
+          }} />
+          <code>{a.config_dir}</code>
+        </div>
+      ))}
+
+      <h3>Projects</h3>
+      {config.projects.map((p, i) => (
+        <div key={p.id}>
+          <input placeholder="Label" value={p.label} onChange={(e) => {
+            const projects = [...config.projects];
+            projects[i] = { ...p, label: e.target.value };
+            setConfig({ ...config, projects });
+          }} />
+          <input placeholder="/path/to/repo" value={p.path} onChange={(e) => {
+            const projects = [...config.projects];
+            projects[i] = { ...p, path: e.target.value };
+            setConfig({ ...config, projects });
+          }} />
+          <button onClick={() => setConfig({ ...config, projects: config.projects.filter((_, j) => j !== i) })}>✕</button>
+        </div>
+      ))}
+      <button onClick={addProject}>Add project</button>
+
+      <div style={{ marginTop: 16 }}>
+        <button onClick={save}>Save</button> <span>{status}</span>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
     </main>
   );
 }
-
-export default App;
