@@ -1,157 +1,150 @@
 # Smoke Checklist — claude-multi
 
-Manual verification steps per OS. Run these after every significant change or before a release.
-
----
-
-## Warp Adapter Decision (macOS)
-
-**Status: Unverified — requires interactive GUI session.**
-
-Warp is installed at `/Applications/Warp.app` on the test machine.
-The adapter command is `open -a Warp {{script}}`.
-
-`open -a <App> <file>` on macOS opens the application with the file as an argument; whether Warp then executes the script as a shell command is application-specific behavior that cannot be confirmed in a headless/non-GUI agent context.
-
-**Human verification step:**
-
-1. Build and run the app (`npm run tauri dev`).
-2. In Preferences, set Terminal to "Warp (verify)".
-3. Trigger a project launch from the tray.
-4. **PASS**: A Warp window opens and `claude` starts in the correct project directory with `CLAUDE_CONFIG_DIR` set.
-5. **FAIL**: Warp opens but does not execute the script, or opens the script as a text file.
-
-**Fallback if FAIL**: Select "Terminal.app" or "iTerm2" in Preferences. Adding native Warp support (via Warp Launch Configurations or the `warp://` URI scheme) is tracked as a follow-up.
-
-The adapter label is intentionally kept as **"Warp (verify)"** until the above pass/fail is confirmed by a human on a GUI session.
+Manual verification steps. Run after every significant change or before a release.
+Automated tests (`cargo test`, `cargo clippy --all-targets -- -D warnings`,
+`npm run build`) cover the pure logic; this checklist covers the GUI/terminal/OAuth
+flows that can't be tested headlessly.
 
 ---
 
 ## Prerequisites (all OS)
 
-- `claude` CLI on PATH (run `claude --version` to verify)
+- `claude` CLI on PATH with `auth` subcommands (`claude auth status`)
 - Node.js ≥ 18 (`node --version`)
-- Rust toolchain with `cargo` on PATH (`cargo --version`)
+- Rust toolchain with `cargo` on PATH (`cargo --version`; else `. "$HOME/.cargo/env"`)
 - `npm install` completed at project root
 
 ---
 
-## macOS
+## macOS — full flow
 
-### 1. Build
-
+### 1. Build & launch
 ```sh
 npm run tauri dev
 ```
+**PASS**: app compiles; a tray icon appears in the menu bar; **no window** opens on
+startup; clicking the icon opens a menu (not nothing — regression guard for the
+duplicate-tray bug).
 
-Expected: the app compiles, a system tray icon appears in the menu bar.
+### 2. Web-fallback guard
+Open the Vite dev URL (e.g. `http://localhost:1420`) in a browser.
+**PASS**: shows the guidance message ("Open this window from the claude-multi tray
+icon…"), not a stuck "Loading…" or console `invoke` errors.
 
-### 2. Register two accounts
+### 3. Accounts in Preferences
+Tray → **Preferences…** → **Accounts**.
+- **PASS**: exactly one default account, **Personal** with config dir `~/.claude-`+`personal`.
+- Click **+ Add account**; set label `DinoCloud` and suffix `dino` (prefix `~/.claude-`
+  is fixed). Remove it with ✕ and re-add to confirm add/remove work.
 
-1. Click the tray icon → **Preferences…**
-2. In the Accounts section, verify two default accounts exist: "Personal (Max)" (`~/.claude-personal`) and "DinoCloud" (`~/.claude-dino`).
-3. Add a test project (e.g., label "My Repo", path to any local directory).
+### 4. Projects + folder picker
+**Projects** section → **+ Add project** → **Browse…**.
+- **PASS**: a native folder picker opens; selecting a folder fills the path and
+  auto-fills the label with the folder name.
+- **PASS**: the account dropdown defaults to the first account; assigning the project
+  to an account works. (A project with no valid account shows a **"— account —"**
+  placeholder, never a misleading first-option selection.)
 
-### 3. Login per account (OAuth — one time each)
+### 5. Save → live refresh (no restart)
+Click **Save**.
+- **PASS**: status reads "Saved — the tray menu was updated."; open the tray menu and
+  the new project appears **under its assigned account only** (not under every account).
+- **PASS**: close Preferences and reopen it — the "Saved" message is gone (cleared on
+  focus / auto-dismiss).
 
-1. Click the tray icon → **Personal (Max)** → **Login…**
-   - A terminal window opens running `claude` with `CLAUDE_CONFIG_DIR=~/.claude-personal`.
-   - Complete OAuth in the browser.
-   - Verify the terminal shows Claude authenticated.
-2. Click the tray icon → **DinoCloud** → **Login…**
-   - A second terminal opens with `CLAUDE_CONFIG_DIR=~/.claude-dino`.
-   - Complete OAuth for the second account.
+### 6. Login per account (OAuth — one time each)
+Before: `ls -la ~/.claude` (note timestamps; if absent it must stay absent).
+Tray → **Personal** → **Login…**.
+- **PASS**: the configured terminal opens running `claude` with
+  `CLAUDE_CONFIG_DIR=~/.claude-personal`; complete OAuth in the browser.
+- Repeat for **DinoCloud** (→ `~/.claude-dino`).
 
-**PASS criteria**: each terminal uses a different config dir; neither touches `~/.claude`.
+### 7. Logged-in email + live hover refresh
+After logging in, hover the tray icon and open the account submenu.
+- **PASS**: instead of **Login…**, the submenu shows **✓ <email>** (disabled) plus
+  **Re-login…** and **Log out** — without restarting the app (hover-refresh).
 
-### 4. Confirm `~/.claude` is untouched
+### 8. New session (project-less)
+Tray → *Account* → **New session**.
+- **PASS**: a terminal opens running `claude` under that account's `CLAUDE_CONFIG_DIR`
+  with no project `cd` (a plain session in your home dir).
 
+### 9. Launch a project under each account
+Tray → **Personal** → *[project]*, then **DinoCloud** → *[its project]*.
+- **PASS**: terminal opens; `echo $CLAUDE_CONFIG_DIR` matches the account; `pwd` is the
+  project path.
+
+### 10. Two simultaneous sessions, no re-auth
+With both terminals open: **PASS** — both are already authenticated; neither prompts OAuth.
+
+### 11. Log out / Re-login
+Tray → *Account* → **Log out**.
+- **PASS**: a terminal runs `claude auth logout` ("Successfully logged out"); hover +
+  reopen the menu → that account now shows **Login…** again.
+- **Re-login…**: runs `claude auth logout` then `claude auth login` (browser OAuth).
+
+### 12. `~/.claude` is untouched
 ```sh
 ls -la ~/.claude
 ```
+**PASS**: timestamps/contents of the default `~/.claude` are unchanged by any of the
+above; if it didn't exist, it still doesn't.
 
-Run before and after login. The timestamps on `~/.claude` (or its contents) must not change. If `~/.claude` does not exist, it must still not be created.
+### 13. Clipboard fallback (invalid terminal)
+Set `"terminal": "does-not-exist"` in `config.json`
+(`~/Library/Application Support/com.lucasdonadio.claude-multi/config.json`) and launch
+a project from the tray.
+- **PASS**: a dialog reports the terminal couldn't be opened and the command was copied
+  to the clipboard. Paste (`Cmd+V`) → contains:
+  ```
+  CLAUDE_CONFIG_DIR='<config_dir>' sh -c "cd '<project_path>' && exec claude"
+  ```
+- Restore `terminal` to `terminal` (valid macOS default) afterward.
 
-### 5. Launch a project under each account
-
-1. Click tray → **Personal (Max)** → *[your test project]*
-   - Terminal opens; verify `echo $CLAUDE_CONFIG_DIR` prints `~/.claude-personal` (expanded).
-   - Verify `pwd` prints the project path.
-2. Click tray → **DinoCloud** → *[your test project]*
-   - Same project, different account.
-
-### 6. Confirm two simultaneous sessions do not re-auth
-
-With both terminals open side by side:
-- Each session should already be authenticated from step 3.
-- Neither session should prompt for OAuth.
-
-**PASS**: Claude prompts in both terminals without re-authentication.
-
-### 7. Clipboard fallback with invalid terminal
-
-1. In Preferences, set Terminal to a non-existent ID (edit `config.json` directly, e.g., `"terminal": "does-not-exist"`).
-2. Trigger a project launch from the tray.
-3. **PASS**: An error toast/message appears saying the terminal could not be opened and the command was copied to the clipboard.
-4. Paste clipboard (`Cmd+V` in any text field) — verify it contains:
-   ```
-   CLAUDE_CONFIG_DIR='<config_dir>' sh -c "cd '<project_path>' && exec claude"
-   ```
-5. Restore `terminal` to a valid value (e.g., `"terminal"`).
-
-### 8. Warp adapter (if applicable)
-
-See "Warp Adapter Decision" section at the top.
+### 14. Warp adapter
+See "Warp Adapter Decision" below.
 
 ---
 
-## Linux (Ubuntu / GNOME)
+## Linux (Ubuntu / GNOME) — deltas
 
-### 1. Build
+- Tray icon may require `gnome-shell-extension-appindicator`.
+- Default terminal `gnome-terminal`; also test Konsole by switching in Preferences.
+- Run steps 3–13 (skip step 2 web-fallback wording differences are fine).
+- **Hover-refresh (step 7/11) does not apply on Linux** (no tray hover events) — verify
+  the **save-refresh** path instead: after a config change, Save updates the menu.
+- Clipboard paste: `Ctrl+V`.
 
-```sh
-npm run tauri dev
-```
+## Windows — deltas
 
-Expected: tray icon appears in system tray (may require `gnome-shell-extension-appindicator` on Ubuntu).
-
-### 2–7. Same steps as macOS
-
-Replace macOS-specific paths:
-- `~/.claude-personal` and `~/.claude-dino` remain the same.
-- Default terminal is `gnome-terminal`; verify step 2–7 with GNOME Terminal.
-- Konsole: repeat steps 3–6 after switching terminal in Preferences.
-
-### Clipboard fallback
-
-Same as macOS step 7; paste with `Ctrl+V`.
+- Tray icon in the taskbar notification area.
+- Config dirs: `%USERPROFILE%\.claude-personal`, etc.; default terminal Windows Terminal
+  (`wt`), scripts are `.ps1`. Verify `$env:CLAUDE_CONFIG_DIR` in the PowerShell session.
+- Hover-refresh applies (Windows emits tray events).
+- Clipboard fallback contains the PowerShell-shaped command.
 
 ---
 
-## Windows
+## Warp Adapter Decision (macOS)
 
-### 1. Build
+**Status: Unverified — requires an interactive GUI session.**
 
-```sh
-npm run tauri dev
-```
+Warp is installed at `/Applications/Warp.app`. The adapter command is
+`open -a Warp {{script}}`. Whether Warp executes the script (vs. opening it as text)
+is application-specific and can't be confirmed headlessly.
 
-Expected: tray icon appears in the system tray (taskbar notification area).
+**Verify**: set Terminal to "Warp (verify)", launch a project.
+- **PASS**: Warp opens and `claude` starts in the right project dir with
+  `CLAUDE_CONFIG_DIR` set.
+- **FAIL**: Warp opens but doesn't run the script → use Terminal.app/iTerm2. Native Warp
+  support (Launch Configurations / `warp://`) is a follow-up.
 
-### 2–7. Same steps as macOS
-
-Replace macOS-specific paths:
-- Config dirs: `%USERPROFILE%\.claude-personal` and `%USERPROFILE%\.claude-dino`.
-- Default terminal is Windows Terminal (`wt`); scripts are `.ps1` (PowerShell).
-- Verify `$env:CLAUDE_CONFIG_DIR` is set correctly in the PowerShell session.
-
-### Clipboard fallback
-
-Same flow; verify clipboard contains the PowerShell equivalent command.
+The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI session.
 
 ---
 
-## Known v1 Caveats
+## Known caveats
 
-- **Restart to refresh tray**: After adding/editing accounts or projects in Preferences, the tray menu does not update automatically. Quit and relaunch the app (`npm run tauri dev` or the built binary) to see the changes.
-- **Warp adapter**: Unverified; see top section. Use Terminal.app or iTerm2 for reliable macOS operation.
+- **Warp adapter**: unverified (above).
+- **Linux hover-refresh**: not available (no tray hover events); save-refresh works.
+- **Distribution**: v1 runs from a local build; no code signing / notarization / installers yet.
