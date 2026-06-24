@@ -8,6 +8,23 @@ pub struct Account {
     pub config_dir: String,
 }
 
+impl Account {
+    /// Returns the email this account is logged in as, by reading
+    /// `<config_dir>/.claude.json` → `oauthAccount.emailAddress`. Returns `None`
+    /// if the account is not logged in (file missing or field absent). Only ever
+    /// reads inside the account's own config dir, never the default `~/.claude`.
+    pub fn logged_in_email(&self) -> Option<String> {
+        let path = crate::paths::expand_tilde(&self.config_dir).join(".claude.json");
+        let contents = std::fs::read_to_string(path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+        value
+            .get("oauthAccount")?
+            .get("emailAddress")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub id: String,
@@ -96,5 +113,33 @@ mod tests {
     fn test_should_return_defaults_when_file_missing_or_invalid() {
         let loaded = Config::load(std::path::Path::new("/nonexistent/cm/config.json"));
         assert_eq!(loaded.accounts.len(), 1);
+    }
+
+    #[test]
+    fn test_should_read_email_when_account_logged_in() {
+        let dir = std::env::temp_dir().join("cm_email_loggedin");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"someone@example.com"}}"#,
+        )
+        .unwrap();
+        let account = Account {
+            id: "x".into(),
+            label: "X".into(),
+            config_dir: dir.to_string_lossy().to_string(),
+        };
+        assert_eq!(account.logged_in_email().as_deref(), Some("someone@example.com"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_return_none_when_account_not_logged_in() {
+        let account = Account {
+            id: "x".into(),
+            label: "X".into(),
+            config_dir: "/nonexistent/cm-account-dir".into(),
+        };
+        assert_eq!(account.logged_in_email(), None);
     }
 }

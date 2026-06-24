@@ -35,8 +35,21 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             sub = sub.item(&MenuItemBuilder::with_id(id, &project.label).build(app)?);
         }
         sub = sub.separator();
-        let login_id = format!("login::{}", account.id);
-        sub = sub.item(&MenuItemBuilder::with_id(login_id, "Login…").build(app)?);
+        match account.logged_in_email() {
+            Some(email) => {
+                // Logged in: show the account email as a disabled status line.
+                let status_id = format!("status::{}", account.id);
+                sub = sub.item(
+                    &MenuItemBuilder::with_id(status_id, format!("✓ {email}"))
+                        .enabled(false)
+                        .build(app)?,
+                );
+            }
+            None => {
+                let login_id = format!("login::{}", account.id);
+                sub = sub.item(&MenuItemBuilder::with_id(login_id, "Login…").build(app)?);
+            }
+        }
         menu = menu.item(&sub.build()?);
     }
 
