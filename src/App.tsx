@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Account, Config, Project, TerminalInfo, getConfig, saveConfig, listTerminals } from "./api";
 import "./App.css";
 
@@ -48,6 +49,17 @@ export default function App() {
     })();
   }, []);
 
+  // The window is hidden (not destroyed) on close, so this component persists.
+  // Clear any stale status message each time the window regains focus.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => { if (focused) setStatus(null); })
+      .then((u) => { unlisten = u; });
+    return () => unlisten?.();
+  }, []);
+
   if (loadError) {
     return (
       <div className="app">
@@ -93,6 +105,7 @@ export default function App() {
     try {
       await saveConfig(cfg);
       setStatus({ kind: "ok", text: "Saved — the tray menu was updated." });
+      window.setTimeout(() => setStatus(null), 3000);
     } catch (e) {
       setStatus({ kind: "err", text: `Save failed: ${e}` });
     }
