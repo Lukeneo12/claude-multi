@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Config, TerminalInfo, getConfig, saveConfig, listTerminals } from "./api";
 
 export default function App() {
@@ -72,6 +73,17 @@ export default function App() {
     });
   };
 
+  const browseProject = async (i: number) => {
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir !== "string") return; // cancelled
+    const projects = [...config.projects];
+    const current = projects[i];
+    const folderName = dir.split("/").pop() || current.label;
+    const labelIsDefault = current.label.trim() === "" || /^Project \d+$/.test(current.label);
+    projects[i] = { ...current, path: dir, label: labelIsDefault ? folderName : current.label };
+    setConfig({ ...config, projects });
+  };
+
   const save = async () => {
     try {
       await saveConfig(config);
@@ -123,6 +135,7 @@ export default function App() {
             projects[i] = { ...p, path: e.target.value };
             setConfig({ ...config, projects });
           }} />
+          <button onClick={() => browseProject(i)}>Browse…</button>
           <button onClick={() => setConfig({ ...config, projects: config.projects.filter((_, j) => j !== i) })}>✕</button>
         </div>
       ))}
