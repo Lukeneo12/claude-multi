@@ -47,21 +47,19 @@ fn build_menu(
 
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
-        // Session under this account, outside any project.
-        sub = sub.item(
-            &MenuItemBuilder::with_id(format!("session::{}", account.id), "New session")
-                .build(app)?,
-        );
-        // Only this account's projects.
-        for project in cfg.projects.iter().filter(|p| p.account == account.id) {
-            let id = format!("launch::{}::{}", account.id, project.id);
-            sub = sub.item(&MenuItemBuilder::with_id(id, &project.label).build(app)?);
-        }
-        sub = sub.separator();
         match account.logged_in_email() {
             Some(email) => {
-                // Logged in: show the account email as a disabled status line,
-                // plus actions to re-login (switch account) or log out.
+                // Logged in: a project-less session, this account's projects, then
+                // the email status and the re-login / log out actions.
+                sub = sub.item(
+                    &MenuItemBuilder::with_id(format!("session::{}", account.id), "New session")
+                        .build(app)?,
+                );
+                for project in cfg.projects.iter().filter(|p| p.account == account.id) {
+                    let id = format!("launch::{}::{}", account.id, project.id);
+                    sub = sub.item(&MenuItemBuilder::with_id(id, &project.label).build(app)?);
+                }
+                sub = sub.separator();
                 let status_id = format!("status::{}", account.id);
                 sub = sub.item(
                     &MenuItemBuilder::with_id(status_id, format!("✓ {email}"))
@@ -74,6 +72,8 @@ fn build_menu(
                 sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
             }
             None => {
+                // Not logged in: only a login action — sessions and projects need
+                // an authenticated account first.
                 let login_id = format!("login::{}", account.id);
                 sub = sub.item(&MenuItemBuilder::with_id(login_id, "Login…").build(app)?);
             }
