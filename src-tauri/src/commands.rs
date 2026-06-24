@@ -12,6 +12,14 @@ pub fn manual_login_command(config_dir: &str) -> String {
     format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"exec claude\"")
 }
 
+pub fn manual_logout_command(config_dir: &str) -> String {
+    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"claude auth logout\"")
+}
+
+pub fn manual_relogin_command(config_dir: &str) -> String {
+    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"claude auth logout; claude auth login\"")
+}
+
 #[derive(Serialize)]
 pub struct TerminalInfo {
     pub id: String,
@@ -89,9 +97,52 @@ pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
     })
 }
 
+#[tauri::command]
+pub fn logout_account(app: AppHandle, account_id: String) -> Result<(), String> {
+    let cfg = Config::load(&paths::config_file_path(&app));
+    let account = cfg.account(&account_id).ok_or("unknown account")?;
+    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
+
+    let config_dir = expand_tilde(&account.config_dir);
+    let cd = config_dir.to_string_lossy();
+
+    let script = launcher::build_logout_script(script_kind_for(&adapter), &cd);
+    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
+        let cmd = manual_logout_command(&cd);
+        let _ = app.clipboard().write_text(cmd);
+        format!(
+            "Couldn't open terminal '{}' for logout. The logout command was copied to your clipboard — paste it into any terminal.",
+            adapter.id
+        )
+    })
+}
+
+#[tauri::command]
+pub fn relogin_account(app: AppHandle, account_id: String) -> Result<(), String> {
+    let cfg = Config::load(&paths::config_file_path(&app));
+    let account = cfg.account(&account_id).ok_or("unknown account")?;
+    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
+
+    let config_dir = expand_tilde(&account.config_dir);
+    let cd = config_dir.to_string_lossy();
+    std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
+
+    let script = launcher::build_relogin_script(script_kind_for(&adapter), &cd);
+    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
+        let cmd = manual_relogin_command(&cd);
+        let _ = app.clipboard().write_text(cmd);
+        format!(
+            "Couldn't open terminal '{}' for re-login. The re-login command was copied to your clipboard — paste it into any terminal.",
+            adapter.id
+        )
+    })
+}
+
 #[cfg(test)]
 mod fallback_tests {
-    use super::{manual_command, manual_login_command};
+    use super::{manual_command, manual_login_command, manual_logout_command, manual_relogin_command};
     #[test]
     fn test_should_build_manual_command_when_spawn_fails() {
         let cmd = manual_command("/home/u/.claude-dino", "/repo");
@@ -101,6 +152,16 @@ mod fallback_tests {
     fn test_should_build_manual_login_command_when_spawn_fails() {
         let cmd = manual_login_command("/home/u/.claude-dino");
         assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"exec claude\"");
+    }
+    #[test]
+    fn test_should_build_manual_logout_command_when_spawn_fails() {
+        let cmd = manual_logout_command("/home/u/.claude-dino");
+        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout\"");
+    }
+    #[test]
+    fn test_should_build_manual_relogin_command_when_spawn_fails() {
+        let cmd = manual_relogin_command("/home/u/.claude-dino");
+        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout; claude auth login\"");
     }
 }
 

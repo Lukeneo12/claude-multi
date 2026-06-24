@@ -6,6 +6,8 @@ use tauri_plugin_dialog::DialogExt;
 pub enum MenuAction {
     Launch { account: String, project: String },
     Login { account: String },
+    Logout { account: String },
+    Relogin { account: String },
     Prefs,
     Quit,
     Unknown,
@@ -16,6 +18,8 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
     match parts.as_slice() {
         ["launch", a, p] => MenuAction::Launch { account: a.to_string(), project: p.to_string() },
         ["login", a] => MenuAction::Login { account: a.to_string() },
+        ["logout", a] => MenuAction::Logout { account: a.to_string() },
+        ["relogin", a] => MenuAction::Relogin { account: a.to_string() },
         ["prefs"] => MenuAction::Prefs,
         ["quit"] => MenuAction::Quit,
         _ => MenuAction::Unknown,
@@ -37,13 +41,18 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         sub = sub.separator();
         match account.logged_in_email() {
             Some(email) => {
-                // Logged in: show the account email as a disabled status line.
+                // Logged in: show the account email as a disabled status line,
+                // plus actions to re-login (switch account) or log out.
                 let status_id = format!("status::{}", account.id);
                 sub = sub.item(
                     &MenuItemBuilder::with_id(status_id, format!("✓ {email}"))
                         .enabled(false)
                         .build(app)?,
                 );
+                let relogin_id = format!("relogin::{}", account.id);
+                sub = sub.item(&MenuItemBuilder::with_id(relogin_id, "Re-login…").build(app)?);
+                let logout_id = format!("logout::{}", account.id);
+                sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
             }
             None => {
                 let login_id = format!("login::{}", account.id);
@@ -74,6 +83,16 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
                 MenuAction::Login { account } => {
                     if let Err(msg) = commands::login_account(app.clone(), account) {
+                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                    }
+                }
+                MenuAction::Logout { account } => {
+                    if let Err(msg) = commands::logout_account(app.clone(), account) {
+                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                    }
+                }
+                MenuAction::Relogin { account } => {
+                    if let Err(msg) = commands::relogin_account(app.clone(), account) {
                         app.dialog().message(msg).title("claude-multi").show(|_| {});
                     }
                 }
@@ -109,5 +128,12 @@ mod tests {
         assert_eq!(parse_menu_id("prefs"), MenuAction::Prefs);
         assert_eq!(parse_menu_id("quit"), MenuAction::Quit);
         assert_eq!(parse_menu_id("garbage"), MenuAction::Unknown);
+    }
+
+    #[test]
+    fn test_should_parse_logout_and_relogin_ids() {
+        assert_eq!(parse_menu_id("logout::dino"), MenuAction::Logout { account: "dino".into() });
+        assert_eq!(parse_menu_id("relogin::personal"), MenuAction::Relogin { account: "personal".into() });
+        assert_eq!(parse_menu_id("status::dino"), MenuAction::Unknown);
     }
 }

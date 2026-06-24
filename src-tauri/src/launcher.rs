@@ -57,6 +57,40 @@ pub fn build_login_script(kind: ScriptKind, config_dir: &str) -> String {
     }
 }
 
+pub fn build_logout_script(kind: ScriptKind, config_dir: &str) -> String {
+    match kind {
+        ScriptKind::Posix => {
+            let escaped_config = posix_single_quote_escape(config_dir);
+            format!(
+                "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{escaped_config}'\nclaude auth logout\necho\necho 'You can close this window.'\n"
+            )
+        }
+        ScriptKind::PowerShell => {
+            let escaped_config = powershell_single_quote_escape(config_dir);
+            format!(
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\nclaude auth logout\nWrite-Host ''\nWrite-Host 'You can close this window.'\n"
+            )
+        }
+    }
+}
+
+pub fn build_relogin_script(kind: ScriptKind, config_dir: &str) -> String {
+    match kind {
+        ScriptKind::Posix => {
+            let escaped_config = posix_single_quote_escape(config_dir);
+            format!(
+                "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{escaped_config}'\nclaude auth logout\nexec claude auth login\n"
+            )
+        }
+        ScriptKind::PowerShell => {
+            let escaped_config = powershell_single_quote_escape(config_dir);
+            format!(
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\nclaude auth logout\nclaude auth login\n"
+            )
+        }
+    }
+}
+
 pub fn write_script(content: &str, kind: ScriptKind) -> std::io::Result<PathBuf> {
     let ext = match kind {
         ScriptKind::Posix => "sh",
@@ -115,5 +149,23 @@ mod tests {
     fn test_should_escape_single_quote_when_powershell() {
         let s = build_script(ScriptKind::PowerShell, r"C:\Users\u\.claude", r"C:\Users\o'brien\repo");
         assert!(s.contains("Set-Location 'C:\\Users\\o''brien\\repo'"));
+    }
+
+    #[test]
+    fn test_should_run_auth_logout_when_logout_script() {
+        let s = build_logout_script(ScriptKind::Posix, "/home/u/.claude-dino");
+        assert!(s.contains("export CLAUDE_CONFIG_DIR='/home/u/.claude-dino'"));
+        assert!(s.contains("claude auth logout"));
+        assert!(!s.contains("cd '"));
+    }
+
+    #[test]
+    fn test_should_logout_then_login_when_relogin_script() {
+        let s = build_relogin_script(ScriptKind::Posix, "/home/u/.claude-dino");
+        assert!(s.contains("export CLAUDE_CONFIG_DIR='/home/u/.claude-dino'"));
+        let logout = s.find("claude auth logout").unwrap();
+        let login = s.find("claude auth login").unwrap();
+        assert!(logout < login, "logout must run before login");
+        assert!(s.trim_end().ends_with("exec claude auth login"));
     }
 }

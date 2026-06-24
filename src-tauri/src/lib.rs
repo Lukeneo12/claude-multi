@@ -16,6 +16,8 @@ pub fn run() {
             commands::list_terminals,
             commands::launch_session,
             commands::login_account,
+            commands::logout_account,
+            commands::relogin_account,
         ])
         .setup(|app| {
             tray::build_tray(app)?;
