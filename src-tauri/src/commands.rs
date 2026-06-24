@@ -35,7 +35,10 @@ pub fn get_config(app: AppHandle) -> Config {
 pub fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
     config
         .save(&paths::config_file_path(&app))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Rebuild the tray menu so changes apply immediately, no restart needed.
+    let _ = crate::tray::refresh_tray(&app);
+    Ok(())
 }
 
 #[tauri::command]

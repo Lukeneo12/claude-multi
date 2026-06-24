@@ -84,7 +84,7 @@ export default function App() {
   const save = async () => {
     try {
       await saveConfig(cfg);
-      setStatus({ kind: "ok", text: "Saved — restart the app to refresh the tray menu." });
+      setStatus({ kind: "ok", text: "Saved — the tray menu was updated." });
     } catch (e) {
       setStatus({ kind: "err", text: `Save failed: ${e}` });
     }

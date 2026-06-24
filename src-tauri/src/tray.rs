@@ -28,10 +28,7 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
     }
 }
 
-pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::tray::TrayIconBuilder;
-    use tauri::Manager;
-    let cfg = Config::load(&paths::config_file_path(app.handle()));
+fn build_menu(app: &tauri::AppHandle, cfg: &Config) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let mut menu = MenuBuilder::new(app);
 
     for account in &cfg.accounts {
@@ -69,10 +66,16 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let prefs = MenuItemBuilder::with_id("prefs", "Preferences…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-    let menu = menu
-        .item(&PredefinedMenuItem::separator(app)?)
+    menu.item(&PredefinedMenuItem::separator(app)?)
         .items(&[&prefs, &quit])
-        .build()?;
+        .build()
+}
+
+pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::tray::TrayIconBuilder;
+    use tauri::Manager;
+    let cfg = Config::load(&paths::config_file_path(app.handle()));
+    let menu = build_menu(app.handle(), &cfg)?;
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
@@ -117,6 +120,18 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    Ok(())
+}
+
+/// Rebuilds the tray menu from the current config without restarting the app.
+/// The previously-registered `on_menu_event` handler keeps working for the new
+/// items (it routes by id). Call this after the config changes.
+pub fn refresh_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let cfg = Config::load(&paths::config_file_path(app));
+    let menu = build_menu(app, &cfg)?;
+    if let Some(tray) = app.tray_by_id("main") {
+        tray.set_menu(Some(menu))?;
+    }
     Ok(())
 }
 
