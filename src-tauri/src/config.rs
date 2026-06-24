@@ -36,8 +36,7 @@ impl Config {
         Config {
             terminal: default_terminal.to_string(),
             accounts: vec![
-                Account { id: "personal".into(), label: "Personal (Max)".into(), config_dir: "~/.claude-personal".into() },
-                Account { id: "dino".into(), label: "DinoCloud".into(), config_dir: "~/.claude-dino".into() },
+                Account { id: "personal".into(), label: "Personal".into(), config_dir: "~/.claude-personal".into() },
             ],
             projects: vec![],
         }
@@ -71,12 +70,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_should_seed_two_symmetric_accounts_when_default() {
+    fn test_should_seed_only_personal_account_when_default() {
         let c = Config::default();
         let ids: Vec<_> = c.accounts.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["personal", "dino"]);
-        assert_eq!(c.account("personal").unwrap().config_dir, "~/.claude-personal");
-        assert_eq!(c.account("dino").unwrap().config_dir, "~/.claude-dino");
+        assert_eq!(ids, vec!["personal"]);
+        let personal = c.account("personal").unwrap();
+        assert_eq!(personal.label, "Personal");
+        assert_eq!(personal.config_dir, "~/.claude-personal");
     }
 
     #[test]
@@ -95,6 +95,6 @@ mod tests {
     #[test]
     fn test_should_return_defaults_when_file_missing_or_invalid() {
         let loaded = Config::load(std::path::Path::new("/nonexistent/cm/config.json"));
-        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(loaded.accounts.len(), 1);
     }
 }

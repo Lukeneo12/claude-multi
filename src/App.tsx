@@ -38,6 +38,28 @@ export default function App() {
 
   if (!config) return <p style={{ padding: 16, fontFamily: "system-ui" }}>Loading…</p>;
 
+  // Account config dirs are always under `~/.claude-<suffix>` so they stay
+  // app-owned and never collide with the default `~/.claude`. The UI shows the
+  // fixed prefix and lets the user edit only the free suffix.
+  const CLAUDE_DIR_PREFIX = "~/.claude-";
+  const suffixOf = (dir: string) =>
+    dir.startsWith(CLAUDE_DIR_PREFIX) ? dir.slice(CLAUDE_DIR_PREFIX.length) : dir;
+
+  const addAccount = () => {
+    const maxSuffix = config.accounts.reduce((max, a) => {
+      const m = a.id.match(/^a(\d+)$/);
+      return m ? Math.max(max, parseInt(m[1], 10)) : max;
+    }, 0);
+    const idx = maxSuffix + 1;
+    setConfig({
+      ...config,
+      accounts: [
+        ...config.accounts,
+        { id: `a${idx}`, label: "New account", config_dir: `${CLAUDE_DIR_PREFIX}new${idx}` },
+      ],
+    });
+  };
+
   const addProject = () => {
     const maxSuffix = config.projects.reduce((max, p) => {
       const m = p.id.match(/^p(\d+)$/);
@@ -72,14 +94,21 @@ export default function App() {
       <h3>Accounts</h3>
       {config.accounts.map((a, i) => (
         <div key={a.id}>
-          <input value={a.label} onChange={(e) => {
+          <input placeholder="Label" value={a.label} onChange={(e) => {
             const accounts = [...config.accounts];
             accounts[i] = { ...a, label: e.target.value };
             setConfig({ ...config, accounts });
           }} />
-          <code>{a.config_dir}</code>
+          <code>{CLAUDE_DIR_PREFIX}</code>
+          <input placeholder="suffix" value={suffixOf(a.config_dir)} onChange={(e) => {
+            const accounts = [...config.accounts];
+            accounts[i] = { ...a, config_dir: CLAUDE_DIR_PREFIX + e.target.value };
+            setConfig({ ...config, accounts });
+          }} />
+          <button onClick={() => setConfig({ ...config, accounts: config.accounts.filter((_, j) => j !== i) })}>✕</button>
         </div>
       ))}
+      <button onClick={addAccount}>Add account</button>
 
       <h3>Projects</h3>
       {config.projects.map((p, i) => (
