@@ -72,6 +72,9 @@ jobs:
   release:
     name: Build & release (${{ matrix.platform }} ${{ matrix.args }})
     needs: quality
+    # Only build/publish on a version tag. A manual workflow_dispatch from a
+    # branch runs just the `quality` gate (no bogus release is created).
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     strategy:
