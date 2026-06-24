@@ -24,6 +24,7 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
 
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
+    use tauri::Manager;
     let cfg = Config::load(&paths::config_file_path(app.handle()));
     let mut menu = MenuBuilder::new(app);
 
@@ -47,7 +48,10 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .build()?;
 
     TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().unwrap().clone())
+        .icon_as_template(true)
         .menu(&menu)
+        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             match parse_menu_id(event.id().as_ref()) {
                 MenuAction::Launch { account, project } => {
@@ -61,7 +65,6 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     }
                 }
                 MenuAction::Prefs => {
-                    use tauri::Manager;
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
                         let _ = w.set_focus();
