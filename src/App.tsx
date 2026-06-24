@@ -18,6 +18,15 @@ const nextId = (ids: string[], prefix: string) => {
   return `${prefix}${max + 1}`;
 };
 
+// `invoke` only works inside the Tauri webview; in a plain browser the IPC
+// bridge is absent.
+const IN_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// Immutably replace item `i` of an array with a shallow-merged patch.
+function updateAt<T>(arr: T[], i: number, patch: Partial<T>): T[] {
+  return arr.map((item, j) => (j === i ? { ...item, ...patch } : item));
+}
+
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
@@ -25,8 +34,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-    if (!inTauri) {
+    if (!IN_TAURI) {
       setLoadError("Open this window from the claude-multi tray icon (run `npm run tauri dev`). It can't run in a plain browser.");
       return;
     }
@@ -52,7 +60,7 @@ export default function App() {
   // The window is hidden (not destroyed) on close, so this component persists.
   // Clear any stale status message each time the window regains focus.
   useEffect(() => {
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    if (!IN_TAURI) return;
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => { if (focused) setStatus(null); })
@@ -93,12 +101,10 @@ export default function App() {
   const browseProject = async (i: number) => {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return; // cancelled
-    const projects = [...cfg.projects];
-    const current = projects[i];
-    const folderName = dir.split("/").pop() || current.label;
+    const current = cfg.projects[i];
+    const folderName = dir.split(/[\\/]/).pop() || current.label; // handle / and \
     const labelIsDefault = current.label.trim() === "" || /^Project \d+$/.test(current.label);
-    projects[i] = { ...current, path: dir, label: labelIsDefault ? folderName : current.label };
-    setProjects(projects);
+    setProjects(updateAt(cfg.projects, i, { path: dir, label: labelIsDefault ? folderName : current.label }));
   };
 
   const save = async () => {
@@ -144,11 +150,7 @@ export default function App() {
               className="input row__grow"
               placeholder="Label (e.g. Personal)"
               value={a.label}
-              onChange={(e) => {
-                const accounts = [...cfg.accounts];
-                accounts[i] = { ...a, label: e.target.value };
-                setAccounts(accounts);
-              }}
+              onChange={(e) => setAccounts(updateAt(cfg.accounts, i, { label: e.target.value }))}
             />
             <span className="affix">
               <span className="affix__prefix">{CLAUDE_DIR_PREFIX}</span>
@@ -156,11 +158,9 @@ export default function App() {
                 className="input affix__input"
                 placeholder="suffix"
                 value={suffixOf(a.config_dir)}
-                onChange={(e) => {
-                  const accounts = [...cfg.accounts];
-                  accounts[i] = { ...a, config_dir: CLAUDE_DIR_PREFIX + e.target.value };
-                  setAccounts(accounts);
-                }}
+                onChange={(e) =>
+                  setAccounts(updateAt(cfg.accounts, i, { config_dir: CLAUDE_DIR_PREFIX + e.target.value }))
+                }
               />
             </span>
             <button
@@ -186,31 +186,19 @@ export default function App() {
               className="input row__label"
               placeholder="Label"
               value={p.label}
-              onChange={(e) => {
-                const projects = [...cfg.projects];
-                projects[i] = { ...p, label: e.target.value };
-                setProjects(projects);
-              }}
+              onChange={(e) => setProjects(updateAt(cfg.projects, i, { label: e.target.value }))}
             />
             <input
               className="input row__grow"
               placeholder="/path/to/repo"
               value={p.path}
-              onChange={(e) => {
-                const projects = [...cfg.projects];
-                projects[i] = { ...p, path: e.target.value };
-                setProjects(projects);
-              }}
+              onChange={(e) => setProjects(updateAt(cfg.projects, i, { path: e.target.value }))}
             />
             <button className="btn btn--secondary" onClick={() => browseProject(i)}>Browse…</button>
             <select
               className="select"
               value={p.account}
-              onChange={(e) => {
-                const projects = [...cfg.projects];
-                projects[i] = { ...p, account: e.target.value };
-                setProjects(projects);
-              }}
+              onChange={(e) => setProjects(updateAt(cfg.projects, i, { account: e.target.value }))}
             >
               {!cfg.accounts.some((a) => a.id === p.account) && (
                 <option value="">— account —</option>

@@ -1,5 +1,5 @@
-use crate::{config::Config, commands, paths};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder, PredefinedMenuItem};
+use crate::{commands, config::Config, paths};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, PartialEq)]
@@ -17,24 +17,41 @@ pub enum MenuAction {
 pub fn parse_menu_id(id: &str) -> MenuAction {
     let parts: Vec<&str> = id.split("::").collect();
     match parts.as_slice() {
-        ["launch", a, p] => MenuAction::Launch { account: a.to_string(), project: p.to_string() },
-        ["session", a] => MenuAction::Session { account: a.to_string() },
-        ["login", a] => MenuAction::Login { account: a.to_string() },
-        ["logout", a] => MenuAction::Logout { account: a.to_string() },
-        ["relogin", a] => MenuAction::Relogin { account: a.to_string() },
+        ["launch", a, p] => MenuAction::Launch {
+            account: a.to_string(),
+            project: p.to_string(),
+        },
+        ["session", a] => MenuAction::Session {
+            account: a.to_string(),
+        },
+        ["login", a] => MenuAction::Login {
+            account: a.to_string(),
+        },
+        ["logout", a] => MenuAction::Logout {
+            account: a.to_string(),
+        },
+        ["relogin", a] => MenuAction::Relogin {
+            account: a.to_string(),
+        },
         ["prefs"] => MenuAction::Prefs,
         ["quit"] => MenuAction::Quit,
         _ => MenuAction::Unknown,
     }
 }
 
-fn build_menu(app: &tauri::AppHandle, cfg: &Config) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_menu(
+    app: &tauri::AppHandle,
+    cfg: &Config,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let mut menu = MenuBuilder::new(app);
 
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
         // Session under this account, outside any project.
-        sub = sub.item(&MenuItemBuilder::with_id(format!("session::{}", account.id), "New session").build(app)?);
+        sub = sub.item(
+            &MenuItemBuilder::with_id(format!("session::{}", account.id), "New session")
+                .build(app)?,
+        );
         // Only this account's projects.
         for project in cfg.projects.iter().filter(|p| p.account == account.id) {
             let id = format!("launch::{}::{}", account.id, project.id);
@@ -83,30 +100,33 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
+            let show_err = |msg: String| {
+                app.dialog().message(msg).title("claude-multi").show(|_| {});
+            };
             match parse_menu_id(event.id().as_ref()) {
                 MenuAction::Launch { account, project } => {
                     if let Err(msg) = commands::launch_session(app.clone(), account, project) {
-                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                        show_err(msg);
                     }
                 }
                 MenuAction::Session { account } => {
                     if let Err(msg) = commands::open_session(app.clone(), account) {
-                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                        show_err(msg);
                     }
                 }
                 MenuAction::Login { account } => {
                     if let Err(msg) = commands::login_account(app.clone(), account) {
-                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                        show_err(msg);
                     }
                 }
                 MenuAction::Logout { account } => {
                     if let Err(msg) = commands::logout_account(app.clone(), account) {
-                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                        show_err(msg);
                     }
                 }
                 MenuAction::Relogin { account } => {
                     if let Err(msg) = commands::relogin_account(app.clone(), account) {
-                        app.dialog().message(msg).title("claude-multi").show(|_| {});
+                        show_err(msg);
                     }
                 }
                 MenuAction::Prefs => {
@@ -150,13 +170,21 @@ mod tests {
     fn test_should_parse_launch_id_into_account_and_project() {
         assert_eq!(
             parse_menu_id("launch::personal::p1"),
-            MenuAction::Launch { account: "personal".into(), project: "p1".into() }
+            MenuAction::Launch {
+                account: "personal".into(),
+                project: "p1".into()
+            }
         );
     }
 
     #[test]
     fn test_should_parse_login_and_static_ids() {
-        assert_eq!(parse_menu_id("login::dino"), MenuAction::Login { account: "dino".into() });
+        assert_eq!(
+            parse_menu_id("login::dino"),
+            MenuAction::Login {
+                account: "dino".into()
+            }
+        );
         assert_eq!(parse_menu_id("prefs"), MenuAction::Prefs);
         assert_eq!(parse_menu_id("quit"), MenuAction::Quit);
         assert_eq!(parse_menu_id("garbage"), MenuAction::Unknown);
@@ -164,13 +192,28 @@ mod tests {
 
     #[test]
     fn test_should_parse_logout_and_relogin_ids() {
-        assert_eq!(parse_menu_id("logout::dino"), MenuAction::Logout { account: "dino".into() });
-        assert_eq!(parse_menu_id("relogin::personal"), MenuAction::Relogin { account: "personal".into() });
+        assert_eq!(
+            parse_menu_id("logout::dino"),
+            MenuAction::Logout {
+                account: "dino".into()
+            }
+        );
+        assert_eq!(
+            parse_menu_id("relogin::personal"),
+            MenuAction::Relogin {
+                account: "personal".into()
+            }
+        );
         assert_eq!(parse_menu_id("status::dino"), MenuAction::Unknown);
     }
 
     #[test]
     fn test_should_parse_session_id() {
-        assert_eq!(parse_menu_id("session::personal"), MenuAction::Session { account: "personal".into() });
+        assert_eq!(
+            parse_menu_id("session::personal"),
+            MenuAction::Session {
+                account: "personal".into()
+            }
+        );
     }
 }

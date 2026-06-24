@@ -23,8 +23,13 @@ mod tests {
 
     #[test]
     fn test_should_expand_leading_tilde_when_path_starts_with_tilde_slash() {
-        let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap();
-        assert_eq!(expand_tilde("~/.claude-personal"), PathBuf::from(home).join(".claude-personal"));
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap();
+        assert_eq!(
+            expand_tilde("~/.claude-personal"),
+            PathBuf::from(home).join(".claude-personal")
+        );
     }
 
     #[test]

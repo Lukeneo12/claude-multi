@@ -1,8 +1,8 @@
-mod paths;
-mod config;
-mod launcher;
 mod adapters;
 mod commands;
+mod config;
+mod launcher;
+mod paths;
 mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

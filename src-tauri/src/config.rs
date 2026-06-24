@@ -21,7 +21,7 @@ impl Account {
             .get("oauthAccount")?
             .get("emailAddress")?
             .as_str()
-            .map(|s| s.to_string())
+            .map(str::to_string)
     }
 }
 
@@ -43,8 +43,8 @@ pub struct Config {
     pub projects: Vec<Project>,
 }
 
-impl Config {
-    pub fn default() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         let default_terminal = if cfg!(target_os = "macos") {
             "terminal"
         } else if cfg!(target_os = "windows") {
@@ -54,13 +54,17 @@ impl Config {
         };
         Config {
             terminal: default_terminal.to_string(),
-            accounts: vec![
-                Account { id: "personal".into(), label: "Personal".into(), config_dir: "~/.claude-personal".into() },
-            ],
+            accounts: vec![Account {
+                id: "personal".into(),
+                label: "Personal".into(),
+                config_dir: "~/.claude-personal".into(),
+            }],
             projects: vec![],
         }
     }
+}
 
+impl Config {
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| Config::default()),
@@ -72,7 +76,8 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self).unwrap())
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, json)
     }
 
     pub fn account(&self, id: &str) -> Option<&Account> {
@@ -131,7 +136,10 @@ mod tests {
             label: "X".into(),
             config_dir: dir.to_string_lossy().to_string(),
         };
-        assert_eq!(account.logged_in_email().as_deref(), Some("someone@example.com"));
+        assert_eq!(
+            account.logged_in_email().as_deref(),
+            Some("someone@example.com")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

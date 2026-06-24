@@ -1,23 +1,28 @@
-use crate::{adapters, config::Config, launcher, paths};
 use crate::paths::expand_tilde;
+use crate::{adapters, config::Config, launcher, paths};
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+/// Builds the paste-able fallback command: `CLAUDE_CONFIG_DIR='…' sh -c "<inner>"`.
+fn manual_sh(config_dir: &str, inner: &str) -> String {
+    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"{inner}\"")
+}
+
 pub fn manual_command(config_dir: &str, project_path: &str) -> String {
-    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"cd '{project_path}' && exec claude\"")
+    manual_sh(config_dir, &format!("cd '{project_path}' && exec claude"))
 }
 
 pub fn manual_login_command(config_dir: &str) -> String {
-    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"exec claude\"")
+    manual_sh(config_dir, "exec claude")
 }
 
 pub fn manual_logout_command(config_dir: &str) -> String {
-    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"claude auth logout\"")
+    manual_sh(config_dir, "claude auth logout")
 }
 
 pub fn manual_relogin_command(config_dir: &str) -> String {
-    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"claude auth logout; claude auth login\"")
+    manual_sh(config_dir, "claude auth logout; claude auth login")
 }
 
 #[derive(Serialize)]
@@ -45,16 +50,19 @@ pub fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
 pub fn list_terminals() -> Vec<TerminalInfo> {
     adapters::builtin_adapters()
         .into_iter()
-        .map(|a| TerminalInfo { id: a.id, label: a.label })
+        .map(|a| TerminalInfo {
+            id: a.id,
+            label: a.label,
+        })
         .collect()
 }
 
-fn script_kind_for(adapter: &adapters::TerminalAdapter) -> launcher::ScriptKind {
-    adapter.kind
-}
-
 #[tauri::command]
-pub fn launch_session(app: AppHandle, account_id: String, project_id: String) -> Result<(), String> {
+pub fn launch_session(
+    app: AppHandle,
+    account_id: String,
+    project_id: String,
+) -> Result<(), String> {
     let cfg = Config::load(&paths::config_file_path(&app));
     let account = cfg.account(&account_id).ok_or("unknown account")?;
     let project = cfg.project(&project_id).ok_or("unknown project")?;
@@ -65,12 +73,11 @@ pub fn launch_session(app: AppHandle, account_id: String, project_id: String) ->
     let cd = config_dir.to_string_lossy();
     let pp = project_path.to_string_lossy();
 
-    let script = launcher::build_script(script_kind_for(&adapter), &cd, &pp);
-    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
+    let script = launcher::build_script(adapter.kind, &cd, &pp);
+    let script_path = launcher::write_script(&script, adapter.kind).map_err(|e| e.to_string())?;
 
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|_e| {
-        let cmd = manual_command(&cd, &pp);
-        let _ = app.clipboard().write_text(cmd);
+        let _ = app.clipboard().write_text(manual_command(&cd, &pp));
         format!(
             "Couldn't open terminal '{}'. The launch command was copied to your clipboard — paste it into any terminal.",
             adapter.id
@@ -78,112 +85,116 @@ pub fn launch_session(app: AppHandle, account_id: String, project_id: String) ->
     })
 }
 
-#[tauri::command]
-pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
-    let cfg = Config::load(&paths::config_file_path(&app));
-    let account = cfg.account(&account_id).ok_or("unknown account")?;
+/// A project-less action performed under one account's `CLAUDE_CONFIG_DIR`.
+enum AccountAction {
+    Login,
+    Session,
+    Logout,
+    Relogin,
+}
+
+/// Shared flow for the project-less account actions: resolve the account and
+/// terminal, build the right script, write it, and spawn — copying a paste-able
+/// command to the clipboard if the terminal can't be opened.
+fn run_account_action(
+    app: &AppHandle,
+    account_id: &str,
+    action: AccountAction,
+) -> Result<(), String> {
+    let cfg = Config::load(&paths::config_file_path(app));
+    let account = cfg.account(account_id).ok_or("unknown account")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
 
     let config_dir = expand_tilde(&account.config_dir);
     let cd = config_dir.to_string_lossy();
-    std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
 
-    let script = launcher::build_login_script(script_kind_for(&adapter), &cd);
-    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
+    // Logout needs no dir creation (the account is logged in already); the other
+    // actions ensure the per-account dir exists for a first-run login.
+    if !matches!(action, AccountAction::Logout) {
+        std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
+    }
+
+    let (script, fallback, what) = match action {
+        AccountAction::Login => (
+            launcher::build_login_script(adapter.kind, &cd),
+            manual_login_command(&cd),
+            "login",
+        ),
+        AccountAction::Session => (
+            launcher::build_login_script(adapter.kind, &cd),
+            manual_login_command(&cd),
+            "the session",
+        ),
+        AccountAction::Logout => (
+            launcher::build_logout_script(adapter.kind, &cd),
+            manual_logout_command(&cd),
+            "logout",
+        ),
+        AccountAction::Relogin => (
+            launcher::build_relogin_script(adapter.kind, &cd),
+            manual_relogin_command(&cd),
+            "re-login",
+        ),
+    };
+
+    let script_path = launcher::write_script(&script, adapter.kind).map_err(|e| e.to_string())?;
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
-        let cmd = manual_login_command(&cd);
-        let _ = app.clipboard().write_text(cmd);
+        let _ = app.clipboard().write_text(fallback);
         format!(
-            "Couldn't open terminal '{}' for login. The login command was copied to your clipboard — paste it into any terminal.",
+            "Couldn't open terminal '{}' for {what}. The command was copied to your clipboard — paste it into any terminal.",
             adapter.id
         )
     })
+}
+
+#[tauri::command]
+pub fn login_account(app: AppHandle, account_id: String) -> Result<(), String> {
+    run_account_action(&app, &account_id, AccountAction::Login)
 }
 
 #[tauri::command]
 pub fn open_session(app: AppHandle, account_id: String) -> Result<(), String> {
-    // A session under an account but outside any project: same as launching
-    // `claude` in the account's config dir with no `cd` into a project.
-    let cfg = Config::load(&paths::config_file_path(&app));
-    let account = cfg.account(&account_id).ok_or("unknown account")?;
-    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
-
-    let config_dir = expand_tilde(&account.config_dir);
-    let cd = config_dir.to_string_lossy();
-    std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
-
-    let script = launcher::build_login_script(script_kind_for(&adapter), &cd);
-    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
-        let cmd = manual_login_command(&cd);
-        let _ = app.clipboard().write_text(cmd);
-        format!(
-            "Couldn't open terminal '{}' for the session. The command was copied to your clipboard — paste it into any terminal.",
-            adapter.id
-        )
-    })
+    run_account_action(&app, &account_id, AccountAction::Session)
 }
 
 #[tauri::command]
 pub fn logout_account(app: AppHandle, account_id: String) -> Result<(), String> {
-    let cfg = Config::load(&paths::config_file_path(&app));
-    let account = cfg.account(&account_id).ok_or("unknown account")?;
-    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
-
-    let config_dir = expand_tilde(&account.config_dir);
-    let cd = config_dir.to_string_lossy();
-
-    let script = launcher::build_logout_script(script_kind_for(&adapter), &cd);
-    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
-        let cmd = manual_logout_command(&cd);
-        let _ = app.clipboard().write_text(cmd);
-        format!(
-            "Couldn't open terminal '{}' for logout. The logout command was copied to your clipboard — paste it into any terminal.",
-            adapter.id
-        )
-    })
+    run_account_action(&app, &account_id, AccountAction::Logout)
 }
 
 #[tauri::command]
 pub fn relogin_account(app: AppHandle, account_id: String) -> Result<(), String> {
-    let cfg = Config::load(&paths::config_file_path(&app));
-    let account = cfg.account(&account_id).ok_or("unknown account")?;
-    let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
-
-    let config_dir = expand_tilde(&account.config_dir);
-    let cd = config_dir.to_string_lossy();
-    std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
-
-    let script = launcher::build_relogin_script(script_kind_for(&adapter), &cd);
-    let script_path = launcher::write_script(&script, script_kind_for(&adapter)).map_err(|e| e.to_string())?;
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
-        let cmd = manual_relogin_command(&cd);
-        let _ = app.clipboard().write_text(cmd);
-        format!(
-            "Couldn't open terminal '{}' for re-login. The re-login command was copied to your clipboard — paste it into any terminal.",
-            adapter.id
-        )
-    })
+    run_account_action(&app, &account_id, AccountAction::Relogin)
 }
 
 #[cfg(test)]
 mod fallback_tests {
-    use super::{manual_command, manual_login_command, manual_logout_command, manual_relogin_command};
+    use super::{
+        manual_command, manual_login_command, manual_logout_command, manual_relogin_command,
+    };
     #[test]
     fn test_should_build_manual_command_when_spawn_fails() {
         let cmd = manual_command("/home/u/.claude-dino", "/repo");
-        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"cd '/repo' && exec claude\"");
+        assert_eq!(
+            cmd,
+            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"cd '/repo' && exec claude\""
+        );
     }
     #[test]
     fn test_should_build_manual_login_command_when_spawn_fails() {
         let cmd = manual_login_command("/home/u/.claude-dino");
-        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"exec claude\"");
+        assert_eq!(
+            cmd,
+            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"exec claude\""
+        );
     }
     #[test]
     fn test_should_build_manual_logout_command_when_spawn_fails() {
         let cmd = manual_logout_command("/home/u/.claude-dino");
-        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout\"");
+        assert_eq!(
+            cmd,
+            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout\""
+        );
     }
     #[test]
     fn test_should_build_manual_relogin_command_when_spawn_fails() {
@@ -201,8 +212,10 @@ mod tests {
         let dir = std::env::temp_dir().join("cm_cmd_save");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
-        let mut cfg = Config::default();
-        cfg.terminal = "iterm".into();
+        let cfg = Config {
+            terminal: "iterm".into(),
+            ..Config::default()
+        };
         cfg.save(&path).unwrap();
         assert_eq!(Config::load(&path).terminal, "iterm");
         std::fs::remove_dir_all(&dir).ok();
