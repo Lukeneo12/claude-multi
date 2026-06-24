@@ -38,7 +38,8 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         let mut sub = SubmenuBuilder::new(app, &account.label);
         // Session under this account, outside any project.
         sub = sub.item(&MenuItemBuilder::with_id(format!("session::{}", account.id), "New session").build(app)?);
-        for project in &cfg.projects {
+        // Only this account's projects.
+        for project in cfg.projects.iter().filter(|p| p.account == account.id) {
             let id = format!("launch::{}::{}", account.id, project.id);
             sub = sub.item(&MenuItemBuilder::with_id(id, &project.label).build(app)?);
         }

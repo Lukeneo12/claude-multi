@@ -30,8 +30,10 @@ pub struct Project {
     pub id: String,
     pub label: String,
     pub path: String,
+    /// The account this project is launched under (account id). Empty for
+    /// legacy/unassigned projects, which then appear under no account.
     #[serde(default)]
-    pub default_account: Option<String>,
+    pub account: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
