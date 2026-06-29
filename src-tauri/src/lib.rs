@@ -20,6 +20,8 @@ pub fn run() {
             commands::login_account,
             commands::logout_account,
             commands::relogin_account,
+            commands::get_inherit_status,
+            commands::set_inherit_decision,
         ])
         .setup(|app| {
             tray::build_tray(app)?;

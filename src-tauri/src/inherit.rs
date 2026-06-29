@@ -1,4 +1,5 @@
 use crate::config::InheritDecision;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -25,6 +26,49 @@ pub struct DestEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkAction {
     pub name: String,
+}
+
+/// Derived, read-only status of one subdir for the Inheritance panel. Unlike
+/// `SubdirPlan` (an action), this is a UI-facing classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InheritStatus {
+    /// Shared entries are (or will be) linked in: explicit Merge, or no decision
+    /// and no conflict.
+    Inherited,
+    /// An explicit Skip decision is in effect; nothing is inherited.
+    Skipped,
+    /// The account has its own entries and no decision is recorded yet.
+    Conflict,
+    /// Nothing to inherit from `~/.claude` for this subdir.
+    None,
+}
+
+/// Classify one subdir for the Inheritance panel from its persisted decision and
+/// current source/dest state. Pure; mirrors `resolve_subdir`'s semantics.
+pub fn subdir_status(
+    decision: Option<&InheritDecision>,
+    source_entries: &[String],
+    dest_entries: &[DestEntry],
+) -> InheritStatus {
+    if source_entries.is_empty() {
+        return InheritStatus::None;
+    }
+    match decision {
+        Some(InheritDecision::Skip) => InheritStatus::Skipped,
+        Some(InheritDecision::Merge) => InheritStatus::Inherited,
+        None if has_conflict(dest_entries) => InheritStatus::Conflict,
+        None => InheritStatus::Inherited,
+    }
+}
+
+/// One row of the Inheritance panel: a subdir, its derived status, and the
+/// decision currently recorded for it (if any).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InheritSubdirStatus {
+    pub subdir: String,
+    pub status: InheritStatus,
+    pub decision: Option<InheritDecision>,
 }
 
 /// The resolved action for one subdir.
@@ -64,14 +108,10 @@ pub fn resolve_subdir(
 ) -> SubdirPlan {
     match decision {
         Some(InheritDecision::Merge) => SubdirPlan::Link(plan_links(source_entries, dest_entries)),
-        Some(InheritDecision::Skip) => {
-            // Stale check: honor skip only while the account still has own entries.
-            if has_conflict(dest_entries) {
-                SubdirPlan::Skip
-            } else {
-                SubdirPlan::NeedsPrompt
-            }
-        }
+        // Sticky decision: a persisted Skip is always honored, even with no
+        // conflict left. The user manages it from the Inheritance panel, so we
+        // no longer re-prompt when the account's own entries disappear.
+        Some(InheritDecision::Skip) => SubdirPlan::Skip,
         None => {
             if has_conflict(dest_entries) {
                 SubdirPlan::NeedsPrompt
@@ -121,6 +161,33 @@ pub fn ensure_inherited(
         }
     }
     Ok(InheritOutcome { needs_prompt })
+}
+
+/// Compute the read-only Inheritance-panel rows for one account: for each
+/// inheritable subdir, list source/dest entries and classify via `subdir_status`.
+/// Read/list only — never writes inside `source` (e.g. `~/.claude`).
+pub fn inherit_status(
+    source: &Path,
+    config_dir: &Path,
+    decisions: &std::collections::HashMap<String, InheritDecision>,
+) -> std::io::Result<Vec<InheritSubdirStatus>> {
+    let mut rows = Vec::with_capacity(INHERITED_SUBDIRS.len());
+    for sub in INHERITED_SUBDIRS {
+        let src_sub = source.join(sub);
+        let source_entries = if src_sub.is_dir() {
+            read_entry_names(&src_sub)?
+        } else {
+            Vec::new()
+        };
+        let dest_entries = read_dest_entries(&config_dir.join(sub))?;
+        let decision = decisions.get(*sub);
+        rows.push(InheritSubdirStatus {
+            subdir: (*sub).to_string(),
+            status: subdir_status(decision, &source_entries, &dest_entries),
+            decision: decision.cloned(),
+        });
+    }
+    Ok(rows)
 }
 
 /// List the file names directly under `dir` (non-recursive).
@@ -272,11 +339,56 @@ mod core_tests {
     }
 
     #[test]
-    fn test_should_reprompt_when_skip_decision_is_stale() {
-        // Skip persisted but no own entries left → stale → re-prompt.
+    fn test_should_skip_when_skip_decision_even_without_own_entries() {
+        // Sticky decision: a persisted Skip is honored even when no own entries
+        // remain. The user manages the choice from the Inheritance panel; we no
+        // longer re-prompt when the conflict disappears.
         let src = vec!["a.md".to_string()];
         let plan = resolve_subdir(Some(&InheritDecision::Skip), &src, &[]);
-        assert_eq!(plan, SubdirPlan::NeedsPrompt);
+        assert_eq!(plan, SubdirPlan::Skip);
+    }
+
+    #[test]
+    fn test_should_report_none_status_when_no_source_entries() {
+        assert_eq!(subdir_status(None, &[], &[]), InheritStatus::None);
+        // Source emptiness dominates even with a decision present.
+        assert_eq!(
+            subdir_status(Some(&InheritDecision::Merge), &[], &[]),
+            InheritStatus::None
+        );
+    }
+
+    #[test]
+    fn test_should_report_inherited_status_when_no_decision_and_no_conflict() {
+        let src = vec!["a.md".to_string()];
+        assert_eq!(subdir_status(None, &src, &[]), InheritStatus::Inherited);
+    }
+
+    #[test]
+    fn test_should_report_conflict_status_when_no_decision_and_own_entries() {
+        let src = vec!["a.md".to_string()];
+        assert_eq!(
+            subdir_status(None, &src, &[dest("own.md", false)]),
+            InheritStatus::Conflict
+        );
+    }
+
+    #[test]
+    fn test_should_report_inherited_status_when_merge_decision() {
+        let src = vec!["a.md".to_string()];
+        assert_eq!(
+            subdir_status(Some(&InheritDecision::Merge), &src, &[dest("own.md", false)]),
+            InheritStatus::Inherited
+        );
+    }
+
+    #[test]
+    fn test_should_report_skipped_status_when_skip_decision() {
+        let src = vec!["a.md".to_string()];
+        assert_eq!(
+            subdir_status(Some(&InheritDecision::Skip), &src, &[dest("own.md", false)]),
+            InheritStatus::Skipped
+        );
     }
 }
 
@@ -386,15 +498,79 @@ mod io_tests {
         assert!(!cfg.join("agents").join("a.md").exists()); // not inherited
     }
 
+    /// Sorted relative paths of every file/dir under `root` (for no-write checks).
+    fn snapshot(root: &std::path::Path) -> Vec<String> {
+        fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                out.push(path.strip_prefix(base).unwrap().display().to_string());
+                if path.is_dir() {
+                    walk(&path, base, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
     #[test]
-    fn test_should_reprompt_when_skip_is_stale() {
-        let (source, cfg) = fixture("stale_skip");
+    fn test_should_compute_inherit_status_per_subdir() {
+        let (source, cfg) = fixture("status_map");
+        touch(&source.join("agents").join("a.md")); // inherited (no conflict)
+        touch(&source.join("skills").join("s.md"));
+        touch(&cfg.join("skills").join("own.md")); // conflict on skills
+        // commands & output-styles: no source subdir → none
+
+        let statuses = inherit_status(&source, &cfg, &HashMap::new()).unwrap();
+        let status_of =
+            |name: &str| statuses.iter().find(|s| s.subdir == name).unwrap().status;
+        assert_eq!(statuses.len(), INHERITED_SUBDIRS.len());
+        assert_eq!(status_of("agents"), InheritStatus::Inherited);
+        assert_eq!(status_of("skills"), InheritStatus::Conflict);
+        assert_eq!(status_of("commands"), InheritStatus::None);
+        assert_eq!(status_of("output-styles"), InheritStatus::None);
+    }
+
+    #[test]
+    fn test_should_report_recorded_decision_in_status() {
+        let (source, cfg) = fixture("status_decision");
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join("own.md"));
+        let mut decisions = HashMap::new();
+        decisions.insert("agents".to_string(), InheritDecision::Skip);
+
+        let statuses = inherit_status(&source, &cfg, &decisions).unwrap();
+        let agents = statuses.iter().find(|s| s.subdir == "agents").unwrap();
+        assert_eq!(agents.status, InheritStatus::Skipped);
+        assert_eq!(agents.decision, Some(InheritDecision::Skip));
+    }
+
+    #[test]
+    fn test_should_not_write_source_when_computing_status() {
+        let (source, cfg) = fixture("status_nowrite");
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join("own.md")); // conflict, would tempt a write
+        let before = snapshot(&source);
+
+        inherit_status(&source, &cfg, &HashMap::new()).unwrap();
+
+        assert_eq!(snapshot(&source), before, "source dir must be untouched");
+    }
+
+    #[test]
+    fn test_should_stay_skipped_when_skip_and_no_own_entries() {
+        // Sticky decision: Skip persists without re-prompting even after the
+        // account's own entries are removed (no conflict left).
+        let (source, cfg) = fixture("sticky_skip");
         touch(&source.join("agents").join("a.md"));
         std::fs::create_dir_all(cfg.join("agents")).unwrap(); // empty: own entries removed
         let mut decisions = HashMap::new();
         decisions.insert("agents".to_string(), InheritDecision::Skip);
         let out = ensure_inherited(&source, &cfg, &decisions).unwrap();
-        assert_eq!(out.needs_prompt, vec!["agents".to_string()]);
+        assert!(out.needs_prompt.is_empty());
+        assert!(!cfg.join("agents").join("a.md").exists()); // not inherited
     }
 
     #[test]
