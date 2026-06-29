@@ -1,6 +1,7 @@
 mod adapters;
 mod commands;
 mod config;
+mod inherit;
 mod launcher;
 mod paths;
 mod tray;
