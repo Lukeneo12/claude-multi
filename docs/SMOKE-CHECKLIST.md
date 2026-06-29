@@ -143,6 +143,20 @@ The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI se
 
 ---
 
+## Inherited Resources
+
+- [ ] **Inherited resources:** With user-level agents/commands in `~/.claude`,
+      launch a session for an account whose dir lacks them → the account dir
+      gains `agents/`, `commands/`, `skills/`, `output-styles/`, `plugins/` with
+      symlinks, and the agents/commands appear inside the session.
+- [ ] **Conflict prompt:** For an account that already has its own `agents/`,
+      launching prompts once (Merge/Skip); the choice persists (no prompt on the
+      next launch) and is saved in `config.json` under `inherit_overrides`.
+- [ ] **Plugins sanity:** Confirm a session with an inherited `plugins/` loads
+      without errors (validates the plugins caveat from the spec).
+
+---
+
 ## Known caveats
 
 - **Warp adapter**: unverified (above).
