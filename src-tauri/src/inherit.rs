@@ -3,13 +3,11 @@ use std::collections::HashSet;
 
 /// User-level subdirs of `~/.claude` inherited into each account's config dir,
 /// in the order they are processed.
-#[allow(dead_code)]
 pub const INHERITED_SUBDIRS: &[&str] =
     &["agents", "commands", "skills", "output-styles", "plugins"];
 
 /// One entry observed in an account's subdir during planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct DestEntry {
     pub name: String,
     /// True if the entry is a symlink (created by us); false = account-owned.
@@ -18,14 +16,12 @@ pub struct DestEntry {
 
 /// A single symlink to create, by entry name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct LinkAction {
     pub name: String,
 }
 
 /// The resolved action for one subdir.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SubdirPlan {
     /// Ensure the subdir exists and create these links (may be empty = no-op).
     Link(Vec<LinkAction>),
@@ -37,7 +33,6 @@ pub enum SubdirPlan {
 
 /// Names to link: every source entry whose name is absent from the dest.
 /// Sorted ascending for deterministic behavior and tests.
-#[allow(dead_code)]
 pub fn plan_links(source_entries: &[String], dest_entries: &[DestEntry]) -> Vec<LinkAction> {
     let existing: HashSet<&str> = dest_entries.iter().map(|e| e.name.as_str()).collect();
     let mut out: Vec<LinkAction> = source_entries
@@ -50,13 +45,11 @@ pub fn plan_links(source_entries: &[String], dest_entries: &[DestEntry]) -> Vec<
 }
 
 /// True if the dest has any real (non-symlink) entry — i.e. account-owned content.
-#[allow(dead_code)]
 pub fn has_conflict(dest_entries: &[DestEntry]) -> bool {
     dest_entries.iter().any(|e| !e.is_symlink)
 }
 
 /// Resolve what to do for one subdir from its persisted decision and current state.
-#[allow(dead_code)]
 pub fn resolve_subdir(
     decision: Option<&InheritDecision>,
     source_entries: &[String],
