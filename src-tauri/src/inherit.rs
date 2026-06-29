@@ -79,7 +79,6 @@ pub fn resolve_subdir(
 }
 
 /// Result of an inherit pass for one account.
-#[allow(dead_code)] // consumed by commands.rs in Task 4
 pub struct InheritOutcome {
     /// Subdir names that need a user decision (conflict or stale skip).
     pub needs_prompt: Vec<String>,
@@ -90,7 +89,6 @@ pub struct InheritOutcome {
 /// resolves the plan from `decisions` and current dest state and creates links.
 /// Subdirs needing a decision are returned in `needs_prompt`; the caller prompts
 /// and persists, then calls again. Never writes inside `source`.
-#[allow(dead_code)] // consumed by commands.rs in Task 4
 pub fn ensure_inherited(
     source: &Path,
     config_dir: &Path,
