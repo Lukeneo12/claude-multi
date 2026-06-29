@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Accounts now inherit your user-level `~/.claude` agents, commands, skills,
+  output-styles, and plugins into each isolated session. If an account already
+  has its own files in one of these, you're asked once whether to merge or keep
+  it isolated.
+
 ## [0.1.0] — 2026-06-24
 
 Initial version: a cross-OS tray app to run Claude Code under multiple accounts,
