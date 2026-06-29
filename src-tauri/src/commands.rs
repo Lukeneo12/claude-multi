@@ -42,11 +42,7 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
     let cfg_path = paths::config_file_path(app);
     let mut cfg = Config::load(&cfg_path);
 
-    let config_dir = expand_tilde(
-        &cfg.account(account_id)
-            .ok_or("unknown account")?
-            .config_dir,
-    );
+    let config_dir = expand_tilde(&cfg.account(account_id).ok_or("unknown account")?.config_dir);
     let decisions = cfg
         .account(account_id)
         .map(|a| a.inherit_overrides.clone())
@@ -68,8 +64,7 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
     }
     cfg.save(&cfg_path).map_err(|e| e.to_string())?;
 
-    inherit::ensure_inherited(&source, &config_dir, &new_decisions)
-        .map_err(|e| e.to_string())?;
+    inherit::ensure_inherited(&source, &config_dir, &new_decisions).map_err(|e| e.to_string())?;
     Ok(())
 }
 

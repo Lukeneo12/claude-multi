@@ -63,9 +63,7 @@ pub fn resolve_subdir(
     dest_entries: &[DestEntry],
 ) -> SubdirPlan {
     match decision {
-        Some(InheritDecision::Merge) => {
-            SubdirPlan::Link(plan_links(source_entries, dest_entries))
-        }
+        Some(InheritDecision::Merge) => SubdirPlan::Link(plan_links(source_entries, dest_entries)),
         Some(InheritDecision::Skip) => {
             // Stale check: honor skip only while the account still has own entries.
             if has_conflict(dest_entries) {
@@ -203,7 +201,10 @@ mod core_tests {
     use super::*;
 
     fn dest(name: &str, is_symlink: bool) -> DestEntry {
-        DestEntry { name: name.to_string(), is_symlink }
+        DestEntry {
+            name: name.to_string(),
+            is_symlink,
+        }
     }
 
     #[test]
@@ -255,17 +256,18 @@ mod core_tests {
             &src,
             &[dest("own.md", false)],
         );
-        assert_eq!(plan, SubdirPlan::Link(vec![LinkAction { name: "a.md".into() }]));
+        assert_eq!(
+            plan,
+            SubdirPlan::Link(vec![LinkAction {
+                name: "a.md".into()
+            }])
+        );
     }
 
     #[test]
     fn test_should_skip_when_skip_decision_and_own_entries_present() {
         let src = vec!["a.md".to_string()];
-        let plan = resolve_subdir(
-            Some(&InheritDecision::Skip),
-            &src,
-            &[dest("own.md", false)],
-        );
+        let plan = resolve_subdir(Some(&InheritDecision::Skip), &src, &[dest("own.md", false)]);
         assert_eq!(plan, SubdirPlan::Skip);
     }
 
@@ -312,8 +314,14 @@ mod io_tests {
         assert!(out.needs_prompt.is_empty());
 
         let linked = cfg.join("agents").join("a.md");
-        assert!(std::fs::symlink_metadata(&linked).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_link(&linked).unwrap(), source.join("agents").join("a.md"));
+        assert!(std::fs::symlink_metadata(&linked)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&linked).unwrap(),
+            source.join("agents").join("a.md")
+        );
         assert!(cfg.join("agents").join("b.md").exists());
     }
 
@@ -362,7 +370,7 @@ mod io_tests {
         decisions.insert("agents".to_string(), InheritDecision::Merge);
         let out = ensure_inherited(&source, &cfg, &decisions).unwrap();
         assert!(out.needs_prompt.is_empty());
-        assert!(cfg.join("agents").join("a.md").exists());   // inherited
+        assert!(cfg.join("agents").join("a.md").exists()); // inherited
         assert!(cfg.join("agents").join("own.md").exists()); // kept
     }
 
@@ -395,7 +403,11 @@ mod io_tests {
         touch(&source.join("agents").join("a.md"));
         // Pre-existing link as if from an earlier run.
         std::fs::create_dir_all(cfg.join("agents")).unwrap();
-        symlink(source.join("agents").join("a.md"), cfg.join("agents").join("a.md")).unwrap();
+        symlink(
+            source.join("agents").join("a.md"),
+            cfg.join("agents").join("a.md"),
+        )
+        .unwrap();
         let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
         assert!(out.needs_prompt.is_empty()); // symlink is not account-owned
     }
@@ -414,7 +426,10 @@ mod io_tests {
 
         // New entry gets linked; the original link is untouched.
         let new_link = cfg.join("agents").join("new.md");
-        assert!(std::fs::symlink_metadata(&new_link).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&new_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(cfg.join("agents").join("a.md").exists());
     }
 }
