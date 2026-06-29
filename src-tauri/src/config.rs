@@ -1,11 +1,28 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+
+/// How an account resolves a conflict between its own resources in a subdir and
+/// the shared resources inherited from `~/.claude`. Persisted per subdir name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InheritDecision {
+    /// Link the shared entries in alongside the account's own (own entries win).
+    Merge,
+    /// Leave this subdir isolated; inherit nothing.
+    Skip,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Account {
     pub id: String,
     pub label: String,
     pub config_dir: String,
+    /// Persisted conflict resolutions, keyed by inherited subdir name
+    /// (`agents`, `commands`, …). Absent key = undecided. `#[serde(default)]`
+    /// keeps legacy configs (without the field) loading.
+    #[serde(default)]
+    pub inherit_overrides: HashMap<String, InheritDecision>,
 }
 
 impl Account {
@@ -58,6 +75,7 @@ impl Default for Config {
                 id: "personal".into(),
                 label: "Personal".into(),
                 config_dir: "~/.claude-personal".into(),
+                inherit_overrides: HashMap::new(),
             }],
             projects: vec![],
         }
@@ -135,6 +153,7 @@ mod tests {
             id: "x".into(),
             label: "X".into(),
             config_dir: dir.to_string_lossy().to_string(),
+            inherit_overrides: HashMap::new(),
         };
         assert_eq!(
             account.logged_in_email().as_deref(),
@@ -149,7 +168,61 @@ mod tests {
             id: "x".into(),
             label: "X".into(),
             config_dir: "/nonexistent/cm-account-dir".into(),
+            inherit_overrides: HashMap::new(),
         };
         assert_eq!(account.logged_in_email(), None);
+    }
+
+    #[test]
+    fn test_should_default_to_empty_inherit_overrides_when_account_created() {
+        let c = Config::default();
+        let personal = c.account("personal").unwrap();
+        assert!(personal.inherit_overrides.is_empty());
+    }
+
+    #[test]
+    fn test_should_roundtrip_inherit_overrides_when_saved_and_loaded() {
+        let dir = std::env::temp_dir().join("cm_cfg_inherit_roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut original = Config::default();
+        original.accounts[0]
+            .inherit_overrides
+            .insert("agents".to_string(), InheritDecision::Skip);
+        original.save(&path).unwrap();
+        let loaded = Config::load(&path);
+        assert_eq!(
+            loaded.accounts[0].inherit_overrides.get("agents"),
+            Some(&InheritDecision::Skip)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_serialize_decision_as_lowercase_when_saved() {
+        assert_eq!(
+            serde_json::to_string(&InheritDecision::Merge).unwrap(),
+            "\"merge\""
+        );
+        assert_eq!(
+            serde_json::to_string(&InheritDecision::Skip).unwrap(),
+            "\"skip\""
+        );
+    }
+
+    #[test]
+    fn test_should_default_inherit_overrides_when_field_absent_in_json() {
+        // Legacy config.json without the field must still load.
+        let dir = std::env::temp_dir().join("cm_cfg_legacy_no_inherit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"terminal":"terminal","accounts":[{"id":"a","label":"A","config_dir":"~/.claude-a"}],"projects":[]}"#,
+        )
+        .unwrap();
+        let loaded = Config::load(&path);
+        assert!(loaded.accounts[0].inherit_overrides.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
