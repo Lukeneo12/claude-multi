@@ -222,6 +222,7 @@ mod tests {
         )
         .unwrap();
         let loaded = Config::load(&path);
+        assert_eq!(loaded.accounts[0].id, "a");
         assert!(loaded.accounts[0].inherit_overrides.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
