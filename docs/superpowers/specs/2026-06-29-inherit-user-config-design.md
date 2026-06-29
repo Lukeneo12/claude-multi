@@ -25,7 +25,8 @@ Goal: make each account's session inherit the user-level resources from
 ### Goals
 - Before each `launch_session` / `open_session` / `login_account`, ensure the
   account's `config_dir` sees the user-level resources from `~/.claude` for the
-  subdirs: `agents`, `commands`, `skills`, `output-styles`, `plugins`.
+  subdirs: `agents`, `commands`, `skills`, `output-styles`. (`plugins` was
+  evaluated and dropped — see Risks / Rollback.)
 - Use **file-level symlinks** (link each entry), so account-specific resources
   coexist with inherited ones and are never clobbered.
 - Be **idempotent and self-healing**: because it runs on every launch, resources
@@ -50,7 +51,7 @@ Goal: make each account's session inherit the user-level resources from
 
 1. Launching a session for an account whose isolated dir has **no** `agents`
    subdir results in `<config_dir>/agents` existing with a symlink per entry of
-   `~/.claude/agents`; same for `commands`, `skills`, `output-styles`, `plugins`.
+   `~/.claude/agents`; same for `commands`, `skills`, `output-styles`.
 2. Subdirs absent from `~/.claude` are silently skipped (nothing created).
 3. Entries whose name **already exists** in the account subdir are left
    untouched (account entry wins); only non-colliding entries get a link.
@@ -66,8 +67,8 @@ Goal: make each account's session inherit the user-level resources from
 8. A persisted `skip` whose subdir no longer has any real (non-symlink) entries
    is treated as **stale**: the decision is re-prompted (merge/skip) and the new
    choice is persisted, replacing the stale one.
-9. `skills/` and `plugins/` entries (directories) and `.md` entries (files) are
-   both linked correctly (per-entry type detection), including on Windows.
+9. `skills/` entries (directories) and `.md` entries (files) are both linked
+   correctly (per-entry type detection), including on Windows.
 10. On Windows, when symlink creation fails, the entry is **copied** instead, and
     the launch still proceeds. Copies are **not** refreshed on later launches;
     they go stale until manually deleted (then re-created on next launch).
@@ -79,7 +80,7 @@ Goal: make each account's session inherit the user-level resources from
 ## Approach
 
 ### Mechanism (uniform, single code path)
-For each subdir `S` in `[agents, commands, skills, output-styles, plugins]` where
+For each subdir `S` in `[agents, commands, skills, output-styles]` where
 `~/.claude/S` exists:
 1. Resolve the persisted decision for `(account, S)`:
    - `merge` → proceed to step 2.
@@ -91,8 +92,7 @@ For each subdir `S` in `[agents, commands, skills, output-styles, plugins]` wher
    (non-symlink) entry and no decision is persisted → this subdir needs a prompt.
 4. **Link plan:** for each entry in `~/.claude/S` whose name does **not** exist in
    `<config_dir>/S`, create a symlink (`<config_dir>/S/<name>` → `~/.claude/S/<name>`).
-   - Per-entry type detection: link as directory (skills, plugins entries) or
-     file (`.md`).
+   - Per-entry type detection: link as directory (skills entries) or file (`.md`).
    - On Windows, on symlink failure, **copy** the entry instead. Copies are **not**
      refreshed on later launches (accepted staleness; re-created only if the copy
      is manually deleted).
@@ -146,12 +146,18 @@ of the implementation.
   manually deleted (re-created next launch). Distinguishing "copied-by-us" from
   "account-owned" is intentionally avoided by treating any existing same-named
   entry as account-owned (it wins). Primary dev target is macOS.
-- **`plugins` subdir:** `~/.claude/plugins` is heavier than the other subdirs —
-  it can hold `config.json`, a `repos/` cache, and marketplace metadata, and
-  plugin config may embed absolute paths. The chosen approach links its top-level
-  entries like any other subdir; validate during implementation that a linked
-  `plugins` dir loads correctly under an isolated `CLAUDE_CONFIG_DIR`, and narrow
-  the linked entries (or drop `plugins`) if it misbehaves.
+- **`plugins` subdir — evaluated and DROPPED.** Originally in scope, but a smoke
+  test (`CLAUDE_CONFIG_DIR=<inherited> claude plugin list`) showed that an
+  inherited `plugins/` loads without error yet reports **every plugin as
+  disabled**: plugin enablement lives in the per-account `<config_dir>/.claude.json`
+  (correctly never inherited), not in `plugins/`. So inheriting it surfaces the
+  inventory but no plugin is actually active — misleading and functionally empty.
+  `~/.claude/plugins` is also mostly **mutable state** (`cache/`, `data/`,
+  `marketplaces/`, `installed_plugins.json`, `install-counts-cache.json`), and a
+  normal session's plugin-sync could **write through the symlinks back into
+  `~/.claude`**, breaking isolation. Decision: exclude `plugins` from
+  `INHERITED_SUBDIRS`. Users enable plugins per account instead. Re-introducing it
+  would require inheriting enablement without sharing auth — out of scope for v1.
 - **Stale `skip` decision:** resolved by the stale check — a `skip` whose subdir
   has no own entries left is re-prompted instead of silently honored (AC 8).
 - **Reading `~/.claude`:** deliberate, sanctioned, read-only (see invariant
