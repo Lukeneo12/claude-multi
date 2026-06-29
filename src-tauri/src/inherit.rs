@@ -159,6 +159,11 @@ fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(src, dst)
 }
 
+/// Create a symlink at `dst` pointing to `src`, falling back to a recursive
+/// copy when symlink creation fails (e.g. no SeCreateSymbolicLinkPrivilege).
+/// Note: a copied fallback entry is a real file, indistinguishable from an
+/// account-owned entry on later launches, so it may trigger a one-time
+/// Merge/Skip conflict prompt for that subdir on the next launch.
 #[cfg(windows)]
 fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
     let res = if src.is_dir() {
@@ -387,5 +392,23 @@ mod io_tests {
         symlink(source.join("agents").join("a.md"), cfg.join("agents").join("a.md")).unwrap();
         let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
         assert!(out.needs_prompt.is_empty()); // symlink is not account-owned
+    }
+
+    #[test]
+    fn test_should_link_new_source_entry_when_added_after_first_run() {
+        let (source, cfg) = fixture("self_healing");
+        touch(&source.join("agents").join("a.md"));
+        ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
+        assert!(cfg.join("agents").join("a.md").exists());
+
+        // A new resource appears in ~/.claude after the first launch.
+        touch(&source.join("agents").join("new.md"));
+        let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
+        assert!(out.needs_prompt.is_empty());
+
+        // New entry gets linked; the original link is untouched.
+        let new_link = cfg.join("agents").join("new.md");
+        assert!(std::fs::symlink_metadata(&new_link).unwrap().file_type().is_symlink());
+        assert!(cfg.join("agents").join("a.md").exists());
     }
 }
