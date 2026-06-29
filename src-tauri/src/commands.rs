@@ -237,6 +237,55 @@ pub fn relogin_account(app: AppHandle, account_id: String) -> Result<(), String>
     run_account_action(&app, &account_id, AccountAction::Relogin)
 }
 
+/// Read-only inheritance status for one account, one row per inheritable subdir.
+/// Lists `~/.claude` and the account dir; never writes. Returns all-`none` rows
+/// when `~/.claude` is absent.
+#[tauri::command]
+pub fn get_inherit_status(
+    app: AppHandle,
+    account_id: String,
+) -> Result<Vec<inherit::InheritSubdirStatus>, String> {
+    let cfg = Config::load(&paths::config_file_path(&app));
+    let account = cfg.account(&account_id).ok_or("unknown account")?;
+    let config_dir = expand_tilde(&account.config_dir);
+    let source = expand_tilde("~/.claude");
+    inherit::inherit_status(&source, &config_dir, &account.inherit_overrides)
+        .map_err(|e| e.to_string())
+}
+
+/// Persist a Merge/Skip decision for one subdir of one account, then re-apply
+/// inheritance so the account dir reflects it. Sticky: the decision is honored
+/// on later launches without re-prompting (see `resolve_subdir`).
+#[tauri::command]
+pub fn set_inherit_decision(
+    app: AppHandle,
+    account_id: String,
+    subdir: String,
+    decision: InheritDecision,
+) -> Result<(), String> {
+    if !inherit::INHERITED_SUBDIRS.contains(&subdir.as_str()) {
+        return Err(format!("unknown subdir: {subdir}"));
+    }
+    let source = expand_tilde("~/.claude");
+    let cfg_path = paths::config_file_path(&app);
+    let mut cfg = Config::load(&cfg_path);
+    let config_dir = expand_tilde(&cfg.account(&account_id).ok_or("unknown account")?.config_dir);
+
+    let account = cfg
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id)
+        .ok_or("unknown account")?;
+    account.inherit_overrides.insert(subdir, decision);
+    let decisions = account.inherit_overrides.clone();
+    cfg.save(&cfg_path).map_err(|e| e.to_string())?;
+
+    if source.is_dir() {
+        inherit::ensure_inherited(&source, &config_dir, &decisions).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod fallback_tests {
     use super::{
