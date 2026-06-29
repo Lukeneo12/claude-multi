@@ -25,14 +25,16 @@ Goal: make each account's session inherit the user-level resources from
 ### Goals
 - Before each `launch_session` / `open_session` / `login_account`, ensure the
   account's `config_dir` sees the user-level resources from `~/.claude` for the
-  subdirs: `agents`, `commands`, `skills`, `output-styles`.
+  subdirs: `agents`, `commands`, `skills`, `output-styles`, `plugins`.
 - Use **file-level symlinks** (link each entry), so account-specific resources
   coexist with inherited ones and are never clobbered.
 - Be **idempotent and self-healing**: because it runs on every launch, resources
   added to `~/.claude` later show up on the next launch automatically.
 - When an account already has its own real entries in a subdir, **ask once**
   whether to also inherit the shared ones (merge) or keep that subdir isolated
-  (skip), and **persist** the decision so launches stay silent afterward.
+  (skip), and **persist** the decision so launches stay silent afterward. A
+  persisted `skip` that becomes stale (the account's own entries are later
+  removed) is **re-prompted** rather than silently honored.
 - Cross-OS: works on macOS/Linux natively; on Windows, degrade to a copy-based
   fallback when symlink creation fails (no privilege required).
 
@@ -41,14 +43,14 @@ Goal: make each account's session inherit the user-level resources from
 - A manual "sync now" button (launch-time auto-sync is the only trigger).
 - Making the **source** configurable — it is hardcoded to `~/.claude` (YAGNI).
 - A global on/off toggle for inheritance (YAGNI; revisit if requested).
-- Syncing anything beyond the four listed subdirs (e.g. `settings.json`,
-  `CLAUDE.md`, `plugins`) — explicitly out of scope.
+- Syncing anything beyond the five listed subdirs (e.g. `settings.json`,
+  `CLAUDE.md`) — explicitly out of scope.
 
 ## Acceptance criteria
 
 1. Launching a session for an account whose isolated dir has **no** `agents`
    subdir results in `<config_dir>/agents` existing with a symlink per entry of
-   `~/.claude/agents`; same for `commands`, `skills`, `output-styles`.
+   `~/.claude/agents`; same for `commands`, `skills`, `output-styles`, `plugins`.
 2. Subdirs absent from `~/.claude` are silently skipped (nothing created).
 3. Entries whose name **already exists** in the account subdir are left
    untouched (account entry wins); only non-colliding entries get a link.
@@ -61,30 +63,39 @@ Goal: make each account's session inherit the user-level resources from
    config keyed by account+subdir; subsequent launches apply it without asking.
 7. A persisted `skip` decision leaves that subdir untouched; a persisted `merge`
    decision applies the file-level merge silently.
-8. `skills/` entries (directories) and `.md` entries (files) are both linked
-   correctly (per-entry type detection), including on Windows.
-9. On Windows, when symlink creation fails, the entry is **copied** instead, and
-   the launch still proceeds. Copy is refreshed on each launch for entries not
-   owned by the account.
-10. Nothing is ever written **inside** `~/.claude`; only the account dirs are
+8. A persisted `skip` whose subdir no longer has any real (non-symlink) entries
+   is treated as **stale**: the decision is re-prompted (merge/skip) and the new
+   choice is persisted, replacing the stale one.
+9. `skills/` and `plugins/` entries (directories) and `.md` entries (files) are
+   both linked correctly (per-entry type detection), including on Windows.
+10. On Windows, when symlink creation fails, the entry is **copied** instead, and
+    the launch still proceeds. Copies are **not** refreshed on later launches;
+    they go stale until manually deleted (then re-created on next launch).
+11. Nothing is ever written **inside** `~/.claude`; only the account dirs are
     modified.
-11. `cargo test` passes; `cargo clippy --all-targets -- -D warnings` is clean
+12. `cargo test` passes; `cargo clippy --all-targets -- -D warnings` is clean
     (cross-OS dead code gated with targeted `#[cfg_attr]`, never crate-wide).
 
 ## Approach
 
 ### Mechanism (uniform, single code path)
-For each subdir `S` in `[agents, commands, skills, output-styles]` where
+For each subdir `S` in `[agents, commands, skills, output-styles, plugins]` where
 `~/.claude/S` exists:
-1. Resolve the persisted decision for `(account, S)`. If `skip` → do nothing.
+1. Resolve the persisted decision for `(account, S)`:
+   - `merge` → proceed to step 2.
+   - `skip` → **stale check**: if `<config_dir>/S` has no real (non-symlink)
+     entries, the decision is stale → drop it and treat as undecided (re-prompt);
+     otherwise do nothing for this subdir.
 2. Ensure `<config_dir>/S` exists as a **real directory** (create if absent).
 3. **Conflict detection:** if `<config_dir>/S` contains any **real**
    (non-symlink) entry and no decision is persisted → this subdir needs a prompt.
 4. **Link plan:** for each entry in `~/.claude/S` whose name does **not** exist in
    `<config_dir>/S`, create a symlink (`<config_dir>/S/<name>` → `~/.claude/S/<name>`).
-   - Per-entry type detection: link as directory (skills) or file (`.md`).
-   - On Windows, on symlink failure, **copy** the entry instead; refresh copies
-     of entries not owned by the account on each launch.
+   - Per-entry type detection: link as directory (skills, plugins entries) or
+     file (`.md`).
+   - On Windows, on symlink failure, **copy** the entry instead. Copies are **not**
+     refreshed on later launches (accepted staleness; re-created only if the copy
+     is manually deleted).
 
 The "no conflict / empty-or-absent subdir" case (the user's current situation)
 needs no decision: links are created automatically, nothing is persisted (the
@@ -130,13 +141,19 @@ of the implementation.
 ## Risks / Rollback
 
 - **Windows without symlink privilege:** handled by the copy fallback (no
-  privilege, no extra crates). Copy doesn't reflect in-place edits of an
-  already-copied source entry until the next launch, and "copied-by-us" vs
-  "account-owned" is fuzzier than with self-identifying symlinks; mitigated by
-  refreshing non-account-owned copies each launch. Primary dev target is macOS.
-- **Stale `skip` decision:** if the user later removes their account-specific
-  entries, a persisted `skip` keeps skipping until changed. Editing decisions is
-  a future Preferences feature. Documented limitation.
+  privilege, no extra crates). Copies are **not** refreshed, so an in-place edit
+  to a source entry won't reach an already-copied account dir until the copy is
+  manually deleted (re-created next launch). Distinguishing "copied-by-us" from
+  "account-owned" is intentionally avoided by treating any existing same-named
+  entry as account-owned (it wins). Primary dev target is macOS.
+- **`plugins` subdir:** `~/.claude/plugins` is heavier than the other subdirs —
+  it can hold `config.json`, a `repos/` cache, and marketplace metadata, and
+  plugin config may embed absolute paths. The chosen approach links its top-level
+  entries like any other subdir; validate during implementation that a linked
+  `plugins` dir loads correctly under an isolated `CLAUDE_CONFIG_DIR`, and narrow
+  the linked entries (or drop `plugins`) if it misbehaves.
+- **Stale `skip` decision:** resolved by the stale check — a `skip` whose subdir
+  has no own entries left is re-prompted instead of silently honored (AC 8).
 - **Reading `~/.claude`:** deliberate, sanctioned, read-only (see invariant
   update). Never writes there.
 - **Rollback:** the feature is isolated in `inherit.rs` plus a single call site in
