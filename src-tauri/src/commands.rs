@@ -1,8 +1,77 @@
+use crate::config::{Config, InheritDecision};
 use crate::paths::expand_tilde;
-use crate::{adapters, config::Config, launcher, paths};
+use crate::{adapters, inherit, launcher, paths};
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
+
+/// Ask the user, once per subdir, whether to merge the shared resources into an
+/// account that already has its own. Returns the chosen decision.
+fn prompt_inherit_decision(app: &AppHandle, account_id: &str, subdir: &str) -> InheritDecision {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let merge = app
+        .dialog()
+        .message(format!(
+            "Account '{account_id}' has its own '{subdir}'. Also inherit the shared \
+             '{subdir}' from ~/.claude?\n\n\
+             Merge = add the shared ones (your own files are kept).\n\
+             Skip = keep this account's '{subdir}' isolated."
+        ))
+        .title("Inherit shared resources?")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Merge".into(),
+            "Skip".into(),
+        ))
+        .blocking_show();
+    if merge {
+        InheritDecision::Merge
+    } else {
+        InheritDecision::Skip
+    }
+}
+
+/// Ensure one account's config dir inherits `~/.claude` resources before launch.
+/// Prompts once per unresolved conflict, persists the decision, then re-applies.
+/// No-op (Ok) when `~/.claude` doesn't exist.
+fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), String> {
+    let source = expand_tilde("~/.claude");
+    if !source.is_dir() {
+        return Ok(()); // nothing to inherit from
+    }
+
+    let cfg_path = paths::config_file_path(app);
+    let mut cfg = Config::load(&cfg_path);
+
+    let config_dir = expand_tilde(
+        &cfg.account(account_id)
+            .ok_or("unknown account")?
+            .config_dir,
+    );
+    let decisions = cfg
+        .account(account_id)
+        .map(|a| a.inherit_overrides.clone())
+        .unwrap_or_default();
+
+    let outcome =
+        inherit::ensure_inherited(&source, &config_dir, &decisions).map_err(|e| e.to_string())?;
+    if outcome.needs_prompt.is_empty() {
+        return Ok(());
+    }
+
+    // Prompt once per conflicted subdir, then persist and re-apply.
+    let mut new_decisions = decisions;
+    for sub in &outcome.needs_prompt {
+        new_decisions.insert(sub.clone(), prompt_inherit_decision(app, account_id, sub));
+    }
+    if let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == account_id) {
+        account.inherit_overrides = new_decisions.clone();
+    }
+    cfg.save(&cfg_path).map_err(|e| e.to_string())?;
+
+    inherit::ensure_inherited(&source, &config_dir, &new_decisions)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 /// Builds the paste-able fallback command: `CLAUDE_CONFIG_DIR='…' sh -c "<inner>"`.
 fn manual_sh(config_dir: &str, inner: &str) -> String {
@@ -68,6 +137,8 @@ pub fn launch_session(
     let project = cfg.project(&project_id).ok_or("unknown project")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
 
+    ensure_account_inherits(&app, &account_id)?;
+
     let config_dir = expand_tilde(&account.config_dir);
     let project_path = expand_tilde(&project.path);
     let cd = config_dir.to_string_lossy();
@@ -112,6 +183,10 @@ fn run_account_action(
     // actions ensure the per-account dir exists for a first-run login.
     if !matches!(action, AccountAction::Logout) {
         std::fs::create_dir_all(&*config_dir).map_err(|e| e.to_string())?;
+    }
+
+    if matches!(action, AccountAction::Login | AccountAction::Session) {
+        ensure_account_inherits(app, account_id)?;
     }
 
     let (script, fallback, what) = match action {
