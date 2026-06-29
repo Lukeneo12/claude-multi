@@ -8,10 +8,11 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Accounts now inherit your user-level `~/.claude` agents, commands, skills,
-  output-styles, and plugins into each isolated session. If an account already
-  has its own files in one of these, you're asked once whether to merge or keep
-  it isolated.
+- Accounts now inherit your user-level `~/.claude` agents, commands, skills, and
+  output-styles into each isolated session. If an account already has its own
+  files in one of these, you're asked once whether to merge or keep it isolated.
+  (Plugins are not inherited: plugin enablement is stored per-account, so a
+  shared `plugins/` would show up disabled — enable plugins per account instead.)
 
 ## [0.1.0] — 2026-06-24
 

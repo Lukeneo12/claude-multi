@@ -4,8 +4,14 @@ use std::path::Path;
 
 /// User-level subdirs of `~/.claude` inherited into each account's config dir,
 /// in the order they are processed.
-pub const INHERITED_SUBDIRS: &[&str] =
-    &["agents", "commands", "skills", "output-styles", "plugins"];
+///
+/// `plugins` is intentionally excluded: a smoke test showed an inherited
+/// `plugins/` loads but reports every plugin as disabled, because plugin
+/// enablement lives in the per-account `.claude.json` (never inherited), not in
+/// `plugins/`. Symlinking the dir would also expose mutable plugin state
+/// (`cache/`, `marketplaces/`, …) to write-through into `~/.claude` on plugin
+/// sync. See the spec's Risks section.
+pub const INHERITED_SUBDIRS: &[&str] = &["agents", "commands", "skills", "output-styles"];
 
 /// One entry observed in an account's subdir during planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
