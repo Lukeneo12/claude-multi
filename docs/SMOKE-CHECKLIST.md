@@ -143,6 +143,43 @@ The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI se
 
 ---
 
+## Inherited Resources
+
+- [ ] **Inherited resources:** With user-level agents/commands in `~/.claude`,
+      launch a session for an account whose dir lacks them → the account dir
+      gains `agents/`, `commands/`, `skills/`, `output-styles/` with symlinks,
+      and the agents/commands appear inside the session.
+- [ ] **Conflict prompt:** For an account that already has its own `agents/`,
+      launching prompts once (Merge/Skip); the choice persists (no prompt on the
+      next launch) and is saved in `config.json` under `inherit_overrides`.
+- [ ] **Plugins NOT inherited:** Confirm the account dir does **not** get a
+      `plugins/` symlink dir (plugins are intentionally excluded — enablement is
+      per-account in `.claude.json`; a shared `plugins/` would show disabled).
+
+---
+
+## Inheritance Panel (Preferences)
+
+- [ ] **Status loads (IPC wiring):** Open Preferences, **Inheritance** card. Pick
+      an account from the dropdown → rows for `agents`/`commands`/`skills`/
+      `output-styles` render with a badge. (This exercises the `camelCase` →
+      `snake_case` arg mapping of `get_inherit_status`; a wiring bug surfaces as an
+      "invalid args / missing field `account_id`" error in the card.)
+- [ ] **Badges match state:** A subdir present in `~/.claude` with no account-owned
+      files shows `inherited`; one with account-owned files and no decision shows
+      `conflict`; a subdir absent from `~/.claude` shows `none`.
+- [ ] **Toggle persists + applies:** Click **Skip** on an `inherited` row → badge
+      flips to `skipped`, `config.json` `inherit_overrides` records it, and a fresh
+      launch of that account does **not** link that subdir. Click **Merge** → it
+      links again.
+- [ ] **Sticky decision:** Set **Skip** on a conflicted subdir, then remove the
+      account's own files for it. Re-open the panel / relaunch → it stays `skipped`
+      (no re-prompt), confirming the sticky-decision behavior change.
+- [ ] **Auto-refresh:** Switching the account dropdown updates the rows without any
+      manual refresh.
+
+---
+
 ## Known caveats
 
 - **Warp adapter**: unverified (above).

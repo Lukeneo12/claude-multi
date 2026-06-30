@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Account, Config, Project, TerminalInfo, getConfig, saveConfig, listTerminals } from "./api";
+import {
+  Account, Config, Project, TerminalInfo, InheritSubdirStatus, InheritDecision,
+  getConfig, saveConfig, listTerminals, getInheritStatus, setInheritDecision,
+} from "./api";
 import "./App.css";
 
 // Account config dirs always live under `~/.claude-<suffix>` so they stay
@@ -32,6 +35,10 @@ export default function App() {
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Inheritance panel: which account is inspected + its fetched per-subdir rows.
+  const [inheritAccount, setInheritAccount] = useState<string>("");
+  const [inheritRows, setInheritRows] = useState<InheritSubdirStatus[]>([]);
+  const [inheritErr, setInheritErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!IN_TAURI) {
@@ -50,12 +57,26 @@ export default function App() {
           validIds.has(p.account) ? p : { ...p, account: firstId }
         );
         setConfig({ ...cfg, projects });
+        setInheritAccount(firstId);
         setTerminals(terms);
       } catch (e) {
         setLoadError(`Failed to load config: ${e}`);
       }
     })();
   }, []);
+
+  // Auto-refresh the inheritance status whenever the inspected account changes.
+  useEffect(() => {
+    if (!IN_TAURI || !inheritAccount) {
+      setInheritRows([]);
+      return;
+    }
+    let cancelled = false;
+    getInheritStatus(inheritAccount)
+      .then((rows) => { if (!cancelled) { setInheritRows(rows); setInheritErr(null); } })
+      .catch((e) => { if (!cancelled) { setInheritErr(`${e}`); setInheritRows([]); } });
+    return () => { cancelled = true; };
+  }, [inheritAccount]);
 
   // The window is hidden (not destroyed) on close, so this component persists.
   // Clear any stale status message each time the window regains focus.
@@ -105,6 +126,17 @@ export default function App() {
     const folderName = dir.split(/[\\/]/).pop() || current.label; // handle / and \
     const labelIsDefault = current.label.trim() === "" || /^Project \d+$/.test(current.label);
     setProjects(updateAt(cfg.projects, i, { path: dir, label: labelIsDefault ? folderName : current.label }));
+  };
+
+  // Persist a Merge/Skip decision for one subdir, then re-fetch to reflect it.
+  const onInheritToggle = async (subdir: string, decision: InheritDecision) => {
+    try {
+      await setInheritDecision(inheritAccount, subdir, decision);
+      setInheritRows(await getInheritStatus(inheritAccount));
+      setInheritErr(null);
+    } catch (e) {
+      setInheritErr(`${e}`);
+    }
   };
 
   const save = async () => {
@@ -170,6 +202,48 @@ export default function App() {
             >✕</button>
           </div>
         ))}
+      </section>
+
+      <section className="card">
+        <div className="card__head">
+          <h2 className="card__title">Inheritance</h2>
+          {cfg.accounts.length > 0 && (
+            <select
+              className="select"
+              value={inheritAccount}
+              onChange={(e) => setInheritAccount(e.target.value)}
+            >
+              {cfg.accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+          )}
+        </div>
+        <p className="card__hint">Shared resources from <code>~/.claude</code> linked into each account. Toggle whether each subdir is merged in or skipped.</p>
+
+        {cfg.accounts.length === 0 && <p className="muted">Add an account to see what it inherits.</p>}
+        {inheritErr && <p className="banner banner--err">{inheritErr}</p>}
+        {cfg.accounts.length > 0 && inheritRows.map((r) => {
+          const mergeOn = r.decision === "merge" || (r.decision === null && r.status === "inherited");
+          const skipOn = r.decision === "skip";
+          return (
+            <div className="row inherit-row" key={r.subdir}>
+              <code className="inherit-row__name">{r.subdir}</code>
+              <span className={`badge badge--${r.status}`}>{r.status}</span>
+              {r.status !== "none" && (
+                <span className="toggle">
+                  <button
+                    className={`toggle__btn ${mergeOn ? "toggle__btn--on" : ""}`}
+                    onClick={() => onInheritToggle(r.subdir, "merge")}
+                  >Merge</button>
+                  <button
+                    className={`toggle__btn ${skipOn ? "toggle__btn--on" : ""}`}
+                    onClick={() => onInheritToggle(r.subdir, "skip")}
+                  >Skip</button>
+                </span>
+              )}
+            </div>
+          );
+        })}
+        <p className="card__hint inherit-note"><code>plugins</code> — excluded by design.</p>
       </section>
 
       <section className="card">
