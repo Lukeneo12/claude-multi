@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Accounts now inherit your user-level `~/.claude` agents, commands, skills, and
+  output-styles into each isolated session. If an account already has its own
+  files in one of these, you're asked once whether to merge or keep it isolated.
+  (Plugins are not inherited: plugin enablement is stored per-account, so a
+  shared `plugins/` would show up disabled — enable plugins per account instead.)
+- **Inheritance panel** in Preferences: pick an account to see, per subdir
+  (`agents`/`commands`/`skills`/`output-styles`), whether it's `inherited`,
+  `skipped`, in `conflict`, or has nothing to inherit (`none`) — with a
+  **Merge / Skip** toggle to set the decision for any subdir without launching a
+  session. The launch-time native dialog stays as the fallback for the still
+  undecided case.
+
+### Changed
+
+- Inheritance decisions are now **sticky**: a `Skip` you choose is kept on later
+  launches even if the account's own files for that subdir are later removed.
+  Previously the choice was re-prompted once the conflict disappeared; manage it
+  from the new Inheritance panel instead.
+
 ## [0.1.0] — 2026-06-24
 
 Initial version: a cross-OS tray app to run Claude Code under multiple accounts,

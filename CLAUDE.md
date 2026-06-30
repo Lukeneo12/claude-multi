@@ -28,6 +28,7 @@ Single-responsibility modules in `src-tauri/src/`:
 | `paths.rs` | `expand_tilde`, `config_file_path` (Tauri app-config dir) |
 | `config.rs` | `Account`/`Project`/`Config` models, defaults, JSON load/save, `Account::logged_in_email` (reads `<config_dir>/.claude.json`) |
 | `launcher.rs` | Pure builders for ephemeral scripts (`build_script`/`build_login_script`/`build_logout_script`/`build_relogin_script`) + `write_script` (atomic, restrictive perms via `tempfile`) + quote-escaping helpers + `ScriptKind` |
+| `inherit.rs` | Inherit user-level `~/.claude` resources (`agents`/`commands`/`skills`/`output-styles`) into each account dir: pure planning (`plan_links`/`has_conflict`/`resolve_subdir`) + edge I/O (`ensure_inherited`, per-entry symlink with Windows copy fallback). `plugins` is intentionally excluded (enablement lives in per-account `.claude.json`) |
 | `adapters.rs` | Pluggable terminal adapters: declarative templates with `{{script}}`/`{{cwd}}`, `builtin_adapters` (per-OS via `#[cfg]`), `render_args`, `spawn` |
 | `commands.rs` | `#[tauri::command]`s: `get_config`/`save_config`/`list_terminals`, `launch_session`/`open_session`/`login_account`/`logout_account`/`relogin_account`, manual-command clipboard fallbacks |
 | `tray.rs` | `build_menu` (from config) + `build_tray` (icon + events) + `refresh_tray` (live rebuild via `tray_by_id` + `set_menu`); `parse_menu_id`/`MenuAction` |
@@ -41,7 +42,11 @@ Frontend (`src/`): `api.ts` (typed `invoke` wrappers + types), `App.tsx` (Prefer
 
 ## Invariants — do not break
 
-- **Never read/write the default `~/.claude`.** Only the per-account `~/.claude-<suffix>` dirs from config. `Project.account` and `Account.config_dir` flow through `expand_tilde`.
+- **Never write inside the default `~/.claude`.** The app may **read/list**
+  `~/.claude/<sub>` to inherit user-level resources (`inherit.rs`), but every
+  write — links, copies, config — lands in the per-account `~/.claude-<suffix>`
+  dirs from config. `Project.account` and `Account.config_dir` flow through
+  `expand_tilde`.
 - **Shell-escape** every `config_dir`/`project_path` interpolated into scripts (POSIX `'\''`, PowerShell `''`). Adding a new script builder means adding escaping + a test.
 - **Temp scripts**: atomic create, restrictive perms, unguessable name (use the `tempfile` path in `write_script`).
 - **GUI PATH**: the app process lacks the user's shell `PATH` (no `~/.local/bin`), so `claude` is invoked **through the terminal adapter**, never via a bare `Command::new("claude")`.
