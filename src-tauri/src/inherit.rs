@@ -377,7 +377,11 @@ mod core_tests {
     fn test_should_report_inherited_status_when_merge_decision() {
         let src = vec!["a.md".to_string()];
         assert_eq!(
-            subdir_status(Some(&InheritDecision::Merge), &src, &[dest("own.md", false)]),
+            subdir_status(
+                Some(&InheritDecision::Merge),
+                &src,
+                &[dest("own.md", false)]
+            ),
             InheritStatus::Inherited
         );
     }
@@ -521,11 +525,10 @@ mod io_tests {
         touch(&source.join("agents").join("a.md")); // inherited (no conflict)
         touch(&source.join("skills").join("s.md"));
         touch(&cfg.join("skills").join("own.md")); // conflict on skills
-        // commands & output-styles: no source subdir → none
+                                                   // commands & output-styles: no source subdir → none
 
         let statuses = inherit_status(&source, &cfg, &HashMap::new()).unwrap();
-        let status_of =
-            |name: &str| statuses.iter().find(|s| s.subdir == name).unwrap().status;
+        let status_of = |name: &str| statuses.iter().find(|s| s.subdir == name).unwrap().status;
         assert_eq!(statuses.len(), INHERITED_SUBDIRS.len());
         assert_eq!(status_of("agents"), InheritStatus::Inherited);
         assert_eq!(status_of("skills"), InheritStatus::Conflict);
