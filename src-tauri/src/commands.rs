@@ -269,7 +269,11 @@ pub fn set_inherit_decision(
     let source = expand_tilde("~/.claude");
     let cfg_path = paths::config_file_path(&app);
     let mut cfg = Config::load(&cfg_path);
-    let config_dir = expand_tilde(&cfg.account(&account_id).ok_or("unknown account")?.config_dir);
+    let config_dir = expand_tilde(
+        &cfg.account(&account_id)
+            .ok_or("unknown account")?
+            .config_dir,
+    );
 
     let account = cfg
         .accounts
