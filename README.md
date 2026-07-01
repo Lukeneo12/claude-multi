@@ -64,7 +64,29 @@ If `cargo` is not on `PATH`, source it first: `. "$HOME/.cargo/env"`
 
 ---
 
-## Install & run
+## Download a release
+
+Grab the bundle for your OS from the [Releases](https://github.com/Lukeneo12/claude-multi/releases)
+page. On macOS pick the DMG (or `.app.tar.gz`) matching your chip — **`aarch64`**
+for Apple Silicon, **`x64`** for Intel.
+
+> **macOS: "claude-multi is damaged and can't be opened."**
+> The builds are **unsigned** (no Apple Developer ID / notarization yet), so on
+> download macOS quarantines them and shows this misleading message — the app is
+> not actually damaged. Clear the quarantine attribute once, then open normally:
+>
+> ```sh
+> # after copying claude-multi.app to /Applications (from the DMG),
+> # or wherever you extracted the .app.tar.gz:
+> xattr -dr com.apple.quarantine /Applications/claude-multi.app
+> ```
+>
+> If it still refuses, force a local ad-hoc signature:
+> `codesign --force --deep --sign - /Applications/claude-multi.app`
+
+---
+
+## Install & run (from source)
 
 ```sh
 git clone <repo-url> claude-multi-session
