@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-07-02
+
+### Fixed
+
+- App version metadata now matches the release: 0.2.0 shipped binaries that
+  self-identified as 0.1.0 because the version in `tauri.conf.json` /
+  `Cargo.toml` / `package.json` was never bumped. The release workflow now
+  fails if the tag doesn't match the app version, so this can't recur.
+
 ## [0.2.0] — 2026-06-30
 
 ### Added
