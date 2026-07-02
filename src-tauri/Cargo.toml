@@ -1,6 +1,6 @@
 [package]
 name = "claude-multi"
-version = "0.2.1"
+version = "0.3.0"
 description = "Cross-OS system-tray app to run Claude Code under multiple isolated accounts."
 authors = ["Lucas Donadio"]
 license = "MIT"
