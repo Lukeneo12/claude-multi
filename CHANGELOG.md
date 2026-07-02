@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-account GitHub CLI isolation**: every launched session (project launch,
+  New session, Login, Logout, Re-login) now exports `GH_CONFIG_DIR` pointing
+  to `<config_dir>/gh`, so `gh`'s active identity and OAuth token follow the
+  claude-multi account of the session instead of the machine-wide
+  `~/.config/gh`. A `gh auth switch` inside one account's session no longer
+  changes the identity of other accounts' sessions or of plain terminals.
+  Each account needs a one-time `gh auth login` the first time it uses `gh`
+  (existing global `gh` credentials are intentionally not copied — see
+  `docs/specs/2026-07-02/spec-isolate-gh-config-per-account.md`). The global
+  `~/.config/gh` is never read or modified.
+
 ## [0.2.1] — 2026-07-02
 
 ### Fixed
@@ -82,5 +97,7 @@ each isolated in its own `CLAUDE_CONFIG_DIR`.
 - Ephemeral scripts are created atomically with restrictive permissions and
   unguessable names (`tempfile`).
 
+[Unreleased]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Lukeneo12/claude-multi/releases/tag/v0.1.0

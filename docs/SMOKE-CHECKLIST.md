@@ -158,6 +158,35 @@ The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI se
 
 ---
 
+## GitHub CLI (`gh`) isolation
+
+- [ ] **Per-account `GH_CONFIG_DIR`:** Launch a session (or **New session**) for
+      **Personal**, run `echo $GH_CONFIG_DIR` (POSIX) / `$env:GH_CONFIG_DIR`
+      (PowerShell) → prints `<config_dir>/gh` (or `\gh`) for that account, e.g.
+      `~/.claude-personal/gh`.
+- [ ] **`gh auth switch` stays isolated:** With two accounts (e.g. **Personal**
+      and **DinoCloud**) each already `gh auth login`-ed once (different
+      GitHub identities), open a session for each plus a plain terminal
+      outside claude-multi. Run `gh api user --jq .login` in all three to
+      note the starting identities. Run `gh auth switch` (or log into a
+      different GitHub account) inside **Personal**'s session only.
+  - **PASS**: `gh api user --jq .login` in **DinoCloud**'s session and in the
+        plain terminal still resolve their **previous** identities —
+        unaffected by the switch in **Personal**'s session.
+- [ ] **First-use login prompt:** For an account that has never run `gh`, the
+      first `gh` command in its session reports being logged out (expected —
+      no credentials are copied from the global `gh` config); `gh auth login`
+      once fixes it for that account going forward.
+- [ ] **No `gh/` dir until first use:** Before ever running `gh` in a given
+      account's session, `ls <config_dir>/gh` reports no such file/directory.
+      claude-multi never creates it — `gh` does, on first use.
+- [ ] **Global `gh` config untouched:** `ls -la ~/.config/gh` (or
+      `%APPDATA%\GitHub CLI` on Windows) before and after using `gh` inside
+      any claude-multi session — unchanged, confirming isolation is one-way
+      (per-account dirs only, never the global one).
+
+---
+
 ## Inheritance Panel (Preferences)
 
 - [ ] **Status loads (IPC wiring):** Open Preferences, **Inheritance** card. Pick

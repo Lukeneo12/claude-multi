@@ -12,11 +12,44 @@ Each account maps to a dedicated `CLAUDE_CONFIG_DIR` under `~/.claude-<suffix>`.
 
 ```sh
 export CLAUDE_CONFIG_DIR=~/.claude-personal
+export GH_CONFIG_DIR=~/.claude-personal/gh
 cd /path/to/your/project
 exec claude
 ```
 
 On macOS, Claude Code stores each config dir's credentials in a separate Keychain entry; on Linux/Windows, in a `.credentials.json` inside the dir. Either way, accounts stay fully isolated and can run in parallel with no re-auth after the one-time login.
+
+---
+
+## GitHub CLI (`gh`) isolation
+
+The GitHub CLI keeps its active identity and OAuth tokens in one global
+location (`~/.config/gh`) by default — shared across every terminal on the
+machine. That breaks the point of running multiple accounts side by side: a
+`gh auth switch` in one session would silently flip the identity used by
+every other session.
+
+To prevent that, every script the tray writes also exports `GH_CONFIG_DIR`
+pointing at `<config_dir>/gh` — a subdirectory of that account's own
+`~/.claude-<suffix>`. This means:
+
+- Each account has its own isolated `gh` state (`hosts.yml`, OAuth token). A
+  `gh auth switch` inside one account's session never affects another
+  account's session or a plain terminal.
+- The **first time** you use `gh` under a given account, you'll see it as
+  logged out — run `gh auth login` once per account. This is deliberate:
+  the app does not copy your existing global `gh` credentials into account
+  dirs (doing so would duplicate every GitHub account's OAuth token into
+  every isolated dir).
+- The `gh/` subdirectory is created by `gh` itself on first use, not by
+  claude-multi. Removing an account's `~/.claude-<suffix>` directory removes
+  its `gh` state along with everything else.
+- Your machine's global `~/.config/gh` is never read or modified by
+  claude-multi — it stays exactly as it was for any terminal you open outside
+  the app.
+
+See `docs/specs/2026-07-02/spec-isolate-gh-config-per-account.md` for the
+full design rationale.
 
 ---
 
