@@ -300,6 +300,59 @@ mod tests {
     }
 
     #[test]
+    fn test_should_export_gh_config_dir_before_set_location_when_build_script_powershell() {
+        let s = build_script(
+            ScriptKind::PowerShell,
+            r"C:\Users\u\.claude-dino",
+            r"C:\repo\app",
+        );
+        let claude_line = s.find("CLAUDE_CONFIG_DIR").unwrap();
+        let gh_line = s.find("GH_CONFIG_DIR").unwrap();
+        let set_location_line = s.find("Set-Location '").unwrap();
+        assert!(
+            claude_line < gh_line && gh_line < set_location_line,
+            "GH_CONFIG_DIR must be exported after CLAUDE_CONFIG_DIR and before Set-Location"
+        );
+    }
+
+    #[test]
+    fn test_should_export_gh_config_dir_before_claude_when_login_script_powershell() {
+        let s = build_login_script(ScriptKind::PowerShell, r"C:\Users\u\.claude-personal");
+        let gh_line = s.find("GH_CONFIG_DIR").unwrap();
+        // Anchored on the standalone invocation line, not a bare "claude" substring
+        // search: the config dir itself (".claude-personal") also contains "claude",
+        // so a naive `s.find("claude")` would match inside the CLAUDE_CONFIG_DIR value
+        // instead of the actual command line.
+        let claude_call_line = s.rfind("\nclaude\n").unwrap();
+        assert!(
+            gh_line < claude_call_line,
+            "GH_CONFIG_DIR must be set before invoking claude"
+        );
+    }
+
+    #[test]
+    fn test_should_export_gh_config_dir_before_logout_when_logout_script_powershell() {
+        let s = build_logout_script(ScriptKind::PowerShell, r"C:\Users\u\.claude-dino");
+        let gh_line = s.find("GH_CONFIG_DIR").unwrap();
+        let logout_line = s.find("claude auth logout").unwrap();
+        assert!(
+            gh_line < logout_line,
+            "GH_CONFIG_DIR must be set before claude auth logout"
+        );
+    }
+
+    #[test]
+    fn test_should_export_gh_config_dir_before_logout_when_relogin_script_powershell() {
+        let s = build_relogin_script(ScriptKind::PowerShell, r"C:\Users\u\.claude-dino");
+        let gh_line = s.find("GH_CONFIG_DIR").unwrap();
+        let logout_line = s.find("claude auth logout").unwrap();
+        assert!(
+            gh_line < logout_line,
+            "GH_CONFIG_DIR must be set before claude auth logout"
+        );
+    }
+
+    #[test]
     fn test_should_escape_single_quote_in_gh_config_dir_when_posix() {
         let s = build_script(ScriptKind::Posix, "/home/o'brien/.claude", "/repo/app");
         assert!(s.contains("GH_CONFIG_DIR='/home/o'\\''brien/.claude/gh'"));
