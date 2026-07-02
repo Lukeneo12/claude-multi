@@ -19,6 +19,15 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/specs/2026-07-02/spec-isolate-gh-config-per-account.md`). The global
   `~/.config/gh` is never read or modified.
 
+## [0.2.1] — 2026-07-02
+
+### Fixed
+
+- App version metadata now matches the release: 0.2.0 shipped binaries that
+  self-identified as 0.1.0 because the version in `tauri.conf.json` /
+  `Cargo.toml` / `package.json` was never bumped. The release workflow now
+  fails if the tag doesn't match the app version, so this can't recur.
+
 ## [0.2.0] — 2026-06-30
 
 ### Added
@@ -88,6 +97,7 @@ each isolated in its own `CLAUDE_CONFIG_DIR`.
 - Ephemeral scripts are created atomically with restrictive permissions and
   unguessable names (`tempfile`).
 
-[Unreleased]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Lukeneo12/claude-multi/releases/tag/v0.1.0

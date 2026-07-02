@@ -1,0 +1,14 @@
+# cargo-audit configuration (used by the "Audit Rust dependencies" CI step,
+# which runs from src-tauri/).
+
+[advisories]
+# quick-xml 0.39.x DoS advisories (memory exhaustion / quadratic parsing on
+# attacker-controlled XML). Pulled transitively via plist -> tauri; plist 1.9.0
+# (latest) still requires quick-xml 0.39, so no compatible upgrade exists yet.
+# The XML plist parsing here only touches the app's own bundle metadata, never
+# untrusted input. Remove both once plist releases with quick-xml >= 0.41
+# (`cargo update -p plist && cargo audit`).
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
