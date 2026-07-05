@@ -165,8 +165,9 @@ No Phase-1 code depends on this; `UsageSummary` carries token totals only.
 - `build_menu` gains a `usage::<account_id>` **disabled** item inserted directly
   after the existing `status::<account>` item — **only for logged-in accounts**
   (skipped when `logged_in_email()` is `None`, matching AC4).
-- `parse_menu_id` learns `usage::<id>` → a `MenuAction` variant treated like the
-  disabled status item (no click action; classified as informational).
+- `parse_menu_id("usage::<id>")` resolves to `MenuAction::Unknown`, exactly like
+  the existing `status::<id>` item: disabled menu items emit no click event, so no
+  dedicated variant or handler branch is needed (a covering unit test pins this).
 - Label produced by `format_tray_label`, **today only, tokens only** (e.g.
   `Today: 1.2M tok`). Token count uses a compact human format (`1.2M`, `340k`).
 

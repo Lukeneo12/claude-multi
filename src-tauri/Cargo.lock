@@ -496,6 +496,7 @@ dependencies = [
 name = "claude-multi"
 version = "0.3.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tauri",

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-account usage in the tray**: each logged-in account now shows a
+  `Today: <N> tok` line (disabled/informational) under its email status,
+  summing today's token consumption (input + output + cache) across that
+  account's `<config_dir>/projects/**/*.jsonl` transcripts. Reading stays
+  strictly inside each account's own config dir — the default `~/.claude` is
+  never counted. Refreshes when the tray menu opens. Tokens only for now;
+  a monetary estimate is intentionally deferred (a hardcoded price table would
+  drift silently from Anthropic pricing). See
+  `docs/specs/2026-07-05/spec-show-account-usage-in-tray.md`.
+
 ## [0.3.0] — 2026-07-02
 
 ### Added

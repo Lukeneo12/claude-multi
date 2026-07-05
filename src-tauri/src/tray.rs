@@ -1,4 +1,4 @@
-use crate::{commands, config::Config, paths};
+use crate::{commands, config::Config, paths, usage};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri_plugin_dialog::DialogExt;
 
@@ -45,6 +45,9 @@ fn build_menu(
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let mut menu = MenuBuilder::new(app);
 
+    // Lower bound of the "today" usage window, computed once per menu build.
+    let today_start = usage::today_start(chrono::Local::now());
+
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
         match account.logged_in_email() {
@@ -63,6 +66,15 @@ fn build_menu(
                 let status_id = format!("status::{}", account.id);
                 sub = sub.item(
                     &MenuItemBuilder::with_id(status_id, format!("✓ {email}"))
+                        .enabled(false)
+                        .build(app)?,
+                );
+                // Today's local token usage for this account (logged-in only).
+                // Disabled/informational, like the status line above it.
+                let usage_id = format!("usage::{}", account.id);
+                let summary = usage::account_usage(account, today_start);
+                sub = sub.item(
+                    &MenuItemBuilder::with_id(usage_id, usage::format_tray_label(&summary))
                         .enabled(false)
                         .build(app)?,
                 );
@@ -205,6 +217,8 @@ mod tests {
             }
         );
         assert_eq!(parse_menu_id("status::dino"), MenuAction::Unknown);
+        // Usage is an informational, disabled item (emits no event) — like status.
+        assert_eq!(parse_menu_id("usage::dino"), MenuAction::Unknown);
     }
 
     #[test]
