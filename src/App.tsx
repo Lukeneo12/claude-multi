@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Account, Config, Project, TerminalInfo, InheritSubdirStatus, InheritDecision,
+  Account, Config, Project, TerminalInfo, InheritSubdirStatus, InheritDecision, UsageLimits,
   getConfig, saveConfig, listTerminals, getInheritStatus, setInheritDecision,
 } from "./api";
 import "./App.css";
@@ -56,7 +56,9 @@ export default function App() {
         const projects = cfg.projects.map((p) =>
           validIds.has(p.account) ? p : { ...p, account: firstId }
         );
-        setConfig({ ...cfg, projects });
+        // Legacy configs may predate usage_limits; default it so the inputs bind.
+        const usage_limits = cfg.usage_limits ?? { session_tokens: null, weekly_tokens: null };
+        setConfig({ ...cfg, projects, usage_limits });
         setInheritAccount(firstId);
         setTerminals(terms);
       } catch (e) {
@@ -108,6 +110,17 @@ export default function App() {
   const patch = (next: Partial<Config>) => setConfig({ ...cfg, ...next });
   const setAccounts = (accounts: Account[]) => patch({ accounts });
   const setProjects = (projects: Project[]) => patch({ projects });
+  const setUsageLimits = (u: Partial<UsageLimits>) =>
+    patch({ usage_limits: { ...cfg.usage_limits, ...u } });
+
+  // Parse a token-ceiling input: empty ⇒ null (unset); otherwise a non-negative
+  // integer, ignoring anything that isn't a clean number.
+  const parseCeiling = (raw: string): number | null => {
+    const t = raw.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  };
 
   const addAccount = () => {
     const id = nextId(cfg.accounts.map((a) => a.id), "a");
@@ -166,6 +179,41 @@ export default function App() {
         >
           {terminals.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
+      </section>
+
+      <section className="card">
+        <h2 className="card__title">Usage limits</h2>
+        <p className="card__hint">
+          The tray shows each account's rolling token usage — <code>Session (5h)</code> and
+          {" "}<code>Week (7d)</code> — computed locally from its session logs. Set an
+          approximate token ceiling here to see a <code>used / ceiling · %</code>. There's no
+          local source for Anthropic's real limits, so calibrate: when <code>/usage</code> shows
+          e.g. 13% used, your ceiling ≈ current tokens ÷ 0.13. Leave blank to show raw tokens.
+        </p>
+        <div className="row">
+          <label className="row__grow">
+            Session (5h) ceiling
+            <input
+              className="input"
+              type="number"
+              min={0}
+              placeholder="e.g. 5000000"
+              value={cfg.usage_limits.session_tokens ?? ""}
+              onChange={(e) => setUsageLimits({ session_tokens: parseCeiling(e.target.value) })}
+            />
+          </label>
+          <label className="row__grow">
+            Week (7d) ceiling
+            <input
+              className="input"
+              type="number"
+              min={0}
+              placeholder="e.g. 40000000"
+              value={cfg.usage_limits.weekly_tokens ?? ""}
+              onChange={(e) => setUsageLimits({ weekly_tokens: parseCeiling(e.target.value) })}
+            />
+          </label>
+        </div>
       </section>
 
       <section className="card">

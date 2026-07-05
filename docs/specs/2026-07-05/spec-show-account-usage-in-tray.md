@@ -10,6 +10,16 @@
 
 ---
 
+> **Revision (2026-07-05, during implementation):** the first cut shipped a
+> `Today: <N> tok` line. In review it proved low-value — the user needs *how much
+> of the session limit is left*, not raw spend. We investigated the
+> subscription-limit source and confirmed it is **not obtainable locally or via
+> any supported interface** (see §4 → *Investigation*). Product chose a **local
+> rolling-window proxy**: two lines, `Session (5h)` and `Week (7d)`, each a
+> cost-weighted token sum over the window vs. a user-calibrated **global ceiling**,
+> rendered `used / ceiling · %`. This section's original two-source framing is kept
+> for history; the Goals/AC/Approach below reflect the shipped design.
+
 ## 1. Context / Problem
 
 `claude-multi` launches interactive Claude Code sessions under several isolated
@@ -56,66 +66,71 @@ Approach → *Deferred: cost estimation*).
 
 ### Goals
 
-**Phase 1 (this spec, implemented now):**
-- A pure `usage` module that, given an `Account`, aggregates token consumption from
-  that account's `<config_dir>/projects/**/*.jsonl` for a given time window. The
-  aggregation core is window-parameterized; the tray displays **today** only.
-- The tray menu shows one **disabled** usage line per account, e.g.
-  `Today: 1.2M tok`, positioned right under the existing status line — **tokens
-  only, no cost** (see Non-goals).
-- The usage line is shown **only for logged-in accounts**; a logged-out account
-  (status `Unknown`) renders no `usage::` line at all.
+- A pure `usage` module that, given an `Account` and a window lower-bound, sums
+  token consumption from that account's `<config_dir>/projects/**/*.jsonl`.
+- The tray shows, **per logged-in account**, two **disabled** informational lines
+  under the status line: `Session (5h): …` (rolling 5-hour window) and
+  `Week (7d): …` (rolling 7-day window), proxying the subscription's session and
+  weekly limits.
+- The displayed number is a **cost-weighted** token sum (output 5×, cache-write
+  1.25×, cache-read 0.1× relative to input), so it tracks real consumption rather
+  than being dominated by cheap, volatile cache reads.
+- A **global token ceiling** per window (`usage_limits.session_tokens`,
+  `usage_limits.weekly_tokens`, both `Option<u64>`), editable in Preferences. With
+  a ceiling set the line reads `used / ceiling · %` (percent may exceed 100%);
+  without one it reads `used tok`.
+- A logged-out account (status `Unknown`) renders **no** usage lines.
 - Reading is confined to each account's own `config_dir` — the default `~/.claude`
-  is never written and never counted against an account (invariant preserved).
+  is never written and never counted (invariant preserved).
 - Usage refreshes on menu build only (**on-open**); no periodic tick.
-- Tray rebuild stays responsive: aggregation must not block the UI thread
-  noticeably (see Approach → performance).
+- Tray rebuild stays responsive (see Approach → performance).
 - Pure logic covered by unit tests (TDD), `cargo clippy -- -D warnings` clean.
 
-**Phase 2 (sketch only, separate spec):**
-- Add a subscription-limit source (percent of block used, reset time) as a second
-  tray line, behind the same display contract.
-
 ### Non-goals
-- **Any monetary / USD figure in Phase 1.** No price table, no `~$`. Cost is
-  deferred until prices can be sourced reliably (Approach → *Deferred: cost
-  estimation*), and if/when added would likely live in Preferences, not the tray.
-- Real-time / streaming updates. Usage refreshes on menu build (**on-open**) only,
-  not continuously and without a periodic tick.
-- Windows beyond **today** in the tray label. The core may aggregate other windows
-  (e.g. 7-day) for future/Preferences use, but the tray shows today only.
-- Per-project breakdown in the tray (tray items are plain text). A richer
-  breakdown in the Preferences window is out of scope for this spec.
-- Phase 2 subscription-limits implementation (only sketched here).
-- Historical charts, exports, or persistence of computed aggregates.
+- **Anthropic's real subscription limits / reset times.** Confirmed not available
+  locally or via any supported interface (§4 → *Investigation*). We ship a local
+  *proxy*, not the authoritative `% used`. The ceiling is a user-calibrated
+  estimate, not a fetched limit.
+- **Any monetary / USD figure.** The cost weighting shapes the token number but no
+  `$` is shown; a real cost estimate would need a maintained price table (deferred).
+- **Per-account ceilings.** One global ceiling per window for now (plans are
+  usually uniform across accounts); per-account override can come later.
+- Real-time / streaming updates (on-open refresh only, no periodic tick).
+- Per-project breakdown in the tray; historical charts, exports, or persistence of
+  computed aggregates.
+- Calling any Anthropic endpoint or reading OAuth credentials.
 
 ## 3. Acceptance Criteria
 
 - [ ] **AC1:** Given an account whose `config_dir` contains
   `projects/<p>/<session>.jsonl` files with `assistant` messages carrying a
-  `message.usage` object, when usage is aggregated, then the returned totals equal
-  the sum of `input_tokens + output_tokens + cache_creation_input_tokens +
-  cache_read_input_tokens` across all messages within the requested window.
-- [ ] **AC2:** Given messages with timestamps, when aggregating for the "today"
-  window, then only messages whose timestamp falls in the current local day are
-  counted (messages from prior days are excluded), with correct boundaries around
-  local midnight.
-- [ ] **AC3:** Given an account whose `config_dir` does not exist or has no
+  `message.usage` object, when usage is aggregated for a window, then the raw
+  totals equal the sum of `input_tokens + output_tokens +
+  cache_creation_input_tokens + cache_read_input_tokens` across all messages whose
+  `timestamp` is ≥ the window lower-bound.
+- [ ] **AC2:** The displayed usage equals the **cost-weighted** sum
+  `input + 5·output + 1.25·cache_creation + 0.1·cache_read` (rounded), so cache
+  reads do not dominate.
+- [ ] **AC3:** `session_window_start(now) == now − 5h` and
+  `week_window_start(now) == now − 7d`; messages before the bound are excluded.
+- [ ] **AC4:** Given an account whose `config_dir` does not exist or has no
   `projects/` dir, when usage is aggregated, then it returns a zeroed result and
   does **not** error, and does **not** read from the default `~/.claude`.
-- [ ] **AC4:** Given an account that is **logged out** (`logged_in_email()` is
-  `None`, i.e. status `Unknown`), when the tray menu is built, then **no**
-  `usage::<account_id>` item is rendered for that account.
-- [ ] **AC5:** For a **logged-in** account, the tray menu renders, under its status
-  line, a disabled item whose id is `usage::<account_id>` and whose label reflects
-  the current **today** aggregation in tokens only (e.g. `Today: 1.2M tok`, no
-  monetary value). `parse_menu_id("usage::x")` round-trips to a usage action
-  classified like other disabled/status ids.
-- [ ] **AC6:** A malformed / partially-written `.jsonl` line is skipped without
-  aborting aggregation of the rest of the file (robust to concurrent writes by a
-  live session).
-- [ ] **AC7:** `cargo test` passes and `cargo clippy --all-targets -- -D warnings`
-  is clean; new pure logic follows `test_should_X_when_Y` naming.
+- [ ] **AC5:** Given a logged-out account (`logged_in_email()` is `None`), the tray
+  renders **no** `usage::…::<account_id>` items for it.
+- [ ] **AC6:** For a logged-in account, the tray renders two disabled items,
+  `usage::session::<id>` and `usage::week::<id>`, under the status line. With a
+  ceiling the label is `<name>: <used> / <ceiling> · <pct>%` (pct may exceed 100);
+  with `None` or `0` ceiling it is `<name>: <used> tok`. Both ids round-trip
+  through `parse_menu_id` to `MenuAction::Unknown` (disabled items emit no event).
+- [ ] **AC7:** `usage_limits` (`session_tokens`, `weekly_tokens`: `Option<u64>`)
+  round-trips through save/load, defaults to `None`, and legacy configs without the
+  field still load; the Preferences UI edits both and empty ⇒ `null`.
+- [ ] **AC8:** A malformed / partially-written `.jsonl` line is skipped without
+  aborting aggregation of the rest of the file (robust to concurrent live writes).
+- [ ] **AC9:** `cargo test` passes and `cargo clippy --all-targets -- -D warnings`
+  is clean; `npm run build` has 0 TS errors; new pure logic follows
+  `test_should_X_when_Y` naming.
 
 ## 4. Approach
 
@@ -127,49 +142,47 @@ line into `tray.rs`. `config`/`commands` stay the source of truth and glue.
 
 ```
 usage.rs (new)
- ├─ pure:  UsageWindow, TokenTotals, UsageSummary
- ├─ pure:  aggregate_lines(lines, window, now) -> UsageSummary  # parse + window + sum
- ├─ pure:  format_tray_label(&UsageSummary) -> String           # "Today: 1.2M tok"
- └─ edge:  account_usage(&Account, window, now) -> UsageSummary  # walk projects/**/*.jsonl
+ ├─ pure:  TokenTotals { weighted_usage() }, UsageSummary
+ ├─ pure:  aggregate_lines(lines, since) -> UsageSummary          # parse + filter ≥since + sum
+ ├─ pure:  session_window_start(now) / week_window_start(now)     # now−5h / now−7d
+ ├─ pure:  human_tokens(n) / format_window_line(name, &summary, Option<u64>)
+ └─ edge:  account_usage(&Account, since) -> UsageSummary         # walk projects/**/*.jsonl
+config.rs:  Config.usage_limits: UsageLimits { session_tokens, weekly_tokens: Option<u64> }
 ```
 
-### Data model (Phase 1)
+### Data model
 
 - Read each line of every `<config_dir>/projects/**/*.jsonl`. Keep only records
   where `type == "assistant"` and `message.usage` is present.
-- Extract `timestamp` (top-level ISO field already present in the logs — **TODO:
-  confirm exact field name during implementation**, likely `timestamp`), `model`,
-  and the four token counts.
-- Bucket into `TokenTotals` for the requested `window` (tray uses `today`). Keep
-  the aggregation window-parameterized so other windows can be added later without
-  reshaping the core.
+- Extract the top-level `timestamp` (confirmed against real logs: RFC-3339 UTC,
+  e.g. `2026-06-30T18:23:25.694Z`) and the four token counts.
+- Sum into `TokenTotals` for messages with `timestamp ≥ since`; `weighted_usage()`
+  applies the cost weights and is what the tray shows.
 
-### Deferred: cost estimation (NOT in Phase 1)
+### Investigation: why the real limit isn't used
 
-Cost is out of scope for Phase 1 (see Non-goals) because a hardcoded price table
-drifts silently from Anthropic's pricing and there is no stable public pricing API
-to read at runtime. Documented here only as the intended future path:
+Verified (incl. a `claude-code-guide` consult) that Anthropic's session/weekly
+`% used` + reset (what `/usage` shows):
+- has **no** headless CLI, JSON mode, hook, statusline, or SDK surface;
+- is **not** persisted to any local file (`.claude.json` caches don't hold it);
+- lives server-side, reachable only via an **undocumented** endpoint with each
+  account's OAuth token (Keychain on macOS — a single global entry, so not cleanly
+  per-account; reading it is sensitive and gated).
 
-- A `PriceTable` mapping `model` → per-million-token USD prices for the four token
-  kinds (input, output, cache-write, cache-read), sourced from Anthropic's public
-  pricing page, stored with a `PRICES_VERIFIED_ON` date constant.
-- A staleness guard: if `PRICES_VERIFIED_ON` is older than a threshold, suppress or
-  visibly mark the estimate rather than show a stale number.
-- Unknown model → tokens counted, cost contribution `0`, flagged as partial.
-- Likely surfaced in the Preferences window, not the always-visible tray line.
-
-No Phase-1 code depends on this; `UsageSummary` carries token totals only.
+That path is fragile, credential-handling, and ToS-gray, so product chose the
+local proxy. The rolling windows + cost weighting approximate the shape of the
+limits; the user calibrates the ceiling against `/usage`'s percentage once.
 
 ### Tray wiring
 
-- `build_menu` gains a `usage::<account_id>` **disabled** item inserted directly
-  after the existing `status::<account>` item — **only for logged-in accounts**
-  (skipped when `logged_in_email()` is `None`, matching AC4).
-- `parse_menu_id("usage::<id>")` resolves to `MenuAction::Unknown`, exactly like
-  the existing `status::<id>` item: disabled menu items emit no click event, so no
-  dedicated variant or handler branch is needed (a covering unit test pins this).
-- Label produced by `format_tray_label`, **today only, tokens only** (e.g.
-  `Today: 1.2M tok`). Token count uses a compact human format (`1.2M`, `340k`).
+- For each **logged-in** account, `build_menu` inserts two **disabled** items after
+  `status::<id>`: `usage::session::<id>` and `usage::week::<id>` (skipped entirely
+  when `logged_in_email()` is `None`).
+- Windows computed once per build from `chrono::Utc::now()`.
+- `parse_menu_id("usage::session::<id>")` / `("usage::week::<id>")` resolve to
+  `MenuAction::Unknown` (disabled items emit no event; no handler branch needed).
+- Labels via `format_window_line`, using `cfg.usage_limits.{session,weekly}_tokens`
+  as the ceiling. Compact human format (`1.2M`, `340k`, `5M`).
 
 ### Performance
 
@@ -178,48 +191,44 @@ No Phase-1 code depends on this; `UsageSummary` carries token totals only.
   1. **mtime + size cache**: memoize per-file aggregates keyed by `(path, mtime,
      len)`; only re-parse changed files. Cache lives in a `Mutex`/`OnceCell` in the
      Tauri state, not persisted.
-  2. **Window prefilter**: skip files whose mtime is older than the aggregation
-     window (today) entirely for the windowed totals.
+  2. **Window prefilter**: skip files whose mtime is older than the window
+     lower-bound entirely (they can hold no message in the window).
   3. If still slow, compute usage **off the UI thread** and update the tray via
-     `refresh_tray` when ready, showing `Today: …` (loading) first.
-- Phase 1 will implement at least (1)+(2); (3) only if measured latency warrants it.
-
-### Phase 2 sketch (subscription limits — separate spec)
-
-- New source `limits.rs`: read the account's OAuth token (macOS Keychain /
-  `<config_dir>/.credentials.json`), call the usage endpoint `/usage` uses, map to
-  `{ block_pct, weekly_pct, resets_at }`.
-- Render as a second disabled line `usage::limit::<account_id>`.
-- Explicitly out of scope here; flagged risks: non-public endpoint, per-account
-  token isolation on macOS, token refresh/expiry handling.
+     `refresh_tray` when ready.
+- Shipped: (1)+(2). Measured fine on real data (a 7-day window over a ~1000-message
+  account parses in well under menu-build latency); (3) only if it regresses.
 
 ### Key decisions
 
-- **Decision 1 — Local logs as the Phase 1 source.** Robust, offline, and respects
-  the "only read inside each `config_dir`" invariant. Trade-off: shows spend, not
-  remaining limit — accepted, limits come in Phase 2.
-- **Decision 2 — New `usage.rs` module, pure core + edge I/O.** Matches the repo's
-  single-responsibility layout (`launcher`/`inherit`/`config`); keeps aggregation
-  fully unit-testable without touching the filesystem.
-- **Decision 3 — Disabled tray line, id `usage::<account>`.** Reuses the exact
-  pattern of the existing `status::<account>` disabled item and its menu-id
-  contract; minimal surface change in `tray.rs`.
-- **Decision 4 — No cost in Phase 1 (tokens only).** A hardcoded price table drifts
-  silently from Anthropic pricing and there is no stable public pricing API to read
-  at runtime without breaking "fully local". A possibly-wrong `~$` is worse than
-  none, so Phase 1 shows tokens only; cost is deferred with a dated-table + staleness
-  guard when we tackle it (likely in Preferences).
+- **Decision 1 — Local logs, no server call.** Robust, offline, respects the "only
+  read inside each `config_dir`" invariant, handles no credentials. Trade-off: it's
+  a proxy for the limit, not the authoritative number — accepted (see Investigation).
+- **Decision 2 — Two rolling windows (5h / 7d).** Mirror the subscription's session
+  and weekly limits; the weekly is usually the binding one. Both are free to compute
+  from the same logs.
+- **Decision 3 — Cost-weighted token metric.** Raw sums are dominated by cache reads
+  (cheap, volatile) and wouldn't track `% used`. Weights `output 5× / cache-write
+  1.25× / cache-read 0.1×` mirror the (model-invariant) pricing ratios, so the
+  number is ~proportional to cost/limit consumption.
+- **Decision 4 — Global, user-calibrated ceiling.** Anthropic's real limit isn't
+  locally available; the user sets one ceiling per window (global; plans are usually
+  uniform) and calibrates against `/usage`. `None` ⇒ show raw usage.
+- **Decision 5 — New `usage.rs`, pure core + edge I/O; disabled tray items.** Matches
+  the repo layout (`launcher`/`inherit`/`config`) and the `status::<id>` menu-id
+  pattern; minimal surface change.
 
 ### Alternatives considered
 
-- **Option A — Shell out to `ccusage` / an external CLI.** Rejected: adds a runtime
-  dependency and GUI-`PATH` problems (the app process lacks the user's shell PATH),
-  and we already have the raw logs.
-- **Option B — Subscription-limits API first (Phase 2 as Phase 1).** Rejected for
-  the first ship: non-public endpoint + macOS per-account token isolation make it
-  fragile; local logs deliver value immediately with far less risk.
-- **Option C — Show usage only in Preferences window.** Rejected: the user wants
-  the at-a-glance, cross-account view that only the tray gives.
+- **Undocumented usage endpoint + per-account OAuth token.** The only route to the
+  *real* `% used`. Rejected: undocumented (breaks without notice), credential-handling
+  (macOS Keychain is a single global entry — not cleanly per-account), ToS-gray.
+- **Raw (unweighted) token sum.** Rejected: dominated by cache reads, so it tracks
+  caching behaviour rather than consumption; a calibrated ceiling would drift as the
+  token-kind mix varies.
+- **Shell out to `ccusage` / an external CLI.** Rejected: runtime dependency + the
+  app process lacks the user's shell `PATH`; we already have the raw logs.
+- **Show usage only in Preferences.** Rejected: the value is the at-a-glance,
+  cross-account tray view.
 
 ## 5. Risks / Rollback
 
@@ -227,35 +236,34 @@ No Phase-1 code depends on this; `UsageSummary` carries token totals only.
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| Log schema (`usage` fields, timestamp field, `type`) changes across Claude Code versions | Med | Med | Parse defensively, skip unknown lines (AC6); centralize field access in one place; unit tests on fixtures |
-| Parsing large histories slows tray build | Med | Med | mtime+size cache, 7d mtime prefilter, optional off-thread compute (Approach → performance) |
-| Cost estimate would diverge from real billing (if added) | — | — | Avoided in Phase 1: no cost shown. Deferred with dated table + staleness guard (Approach) |
-| Reading another account's / default `~/.claude` logs by mistake | Low | High | Path always derived from `Account.config_dir` via `expand_tilde`; unit test asserts default dir is never touched (AC3) |
-| Timezone / "today" boundary off-by-one | Med | Low | Use local-day boundaries explicitly; unit tests around midnight (AC2) |
+| Log schema (`usage` fields, timestamp, `type`) changes across Claude Code versions | Med | Med | Parse defensively, skip unknown lines (AC8); field access centralized in `usage.rs`; fixture tests |
+| Proxy diverges from the real `% used` (weighting/limit are estimates) | High | Low | Documented as a proxy (Non-goals); cost weighting keeps it directional; ceiling is recalibratable |
+| Parsing large histories slows tray build | Med | Med | mtime+size memo cache + window mtime prefilter (Approach → performance); verified fine on real data |
+| Reading another account's / default `~/.claude` logs by mistake | Low | High | Path always derived from `Account.config_dir` via `expand_tilde`; test asserts default dir untouched (AC4) |
 
 ### Rollback plan
 
-- Feature is additive (a new module + two localized edits in `tray.rs`). To revert:
-  `git revert` the feature commit(s), or remove the `usage::<account>` line from
-  `build_menu` and drop the `usage` variant from `parse_menu_id` — the rest of the
-  tray is unaffected. No persisted state or migrations to undo.
+- Feature is additive (a new `usage.rs`, a `usage_limits` config field, two `tray.rs`
+  edits, one Preferences card). To revert: `git revert` the feature commit(s). The
+  `usage_limits` field is `#[serde(default)]`, so old/new configs interoperate; no
+  migrations to undo.
 
 ## 6. Open questions
 
-_All product/UX questions resolved (2026-07-05). Remaining item is an implementation
-detail verified during coding._
+_All product/UX questions resolved during implementation (2026-07-05)._
 
-- [ ] Exact top-level **timestamp field name** in the `.jsonl` records (confirm
-  `timestamp` vs other) — verify against real logs during implementation.
-
-### Resolved
-
-- **Timestamp field** → OK, confirm `timestamp` against real logs while coding.
-- **Tray label content** → **today only, tokens only** (no cost). ✅
-- **Cost / pricing table** → **deferred** out of Phase 1; when added, prices sourced
-  from Anthropic's pricing page with a `PRICES_VERIFIED_ON` date + staleness guard. ✅
-- **Logged-out accounts** → **hide** the usage line entirely (no `usage::` item). ✅
+- **Timestamp field** → confirmed `timestamp` (RFC-3339 UTC) against real logs. ✅
+- **What to show** → session-limit "remaining", not raw spend. Real limit isn't
+  locally available → local rolling-window proxy. ✅
+- **Windows** → both **Session (5h)** and **Week (7d)**. ✅
+- **Ceiling** → **global** (one per window), user-calibrated; `None` ⇒ raw usage. ✅
+- **Metric** → **cost-weighted** tokens (not raw), so it tracks consumption. ✅
+- **Logged-out accounts** → **hide** the usage lines. ✅
 - **Refresh cadence** → **on-open only**, no periodic tick. ✅
+
+### Possible follow-ups (not in this spec)
+- Per-account ceiling override (if plans differ across accounts).
+- Auto-suggest a ceiling from a one-time `/usage` percentage the user pastes in.
 
 ---
 

@@ -53,11 +53,32 @@ pub struct Project {
     pub account: String,
 }
 
+/// Global, calibrated token ceilings for the tray usage lines. There is no
+/// supported/local source for Anthropic's real subscription limits (they live
+/// server-side and aren't persisted), so the user sets an approximate ceiling —
+/// e.g. by cross-referencing `/usage`'s percentage once — and the tray renders
+/// `used / ceiling · %`. `None` = no ceiling set (tray shows raw tokens). Global
+/// rather than per-account because the plans are usually the same across
+/// accounts; a per-account override can come later if needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UsageLimits {
+    /// Approximate token ceiling for the rolling 5-hour "session" window.
+    #[serde(default)]
+    pub session_tokens: Option<u64>,
+    /// Approximate token ceiling for the rolling 7-day "weekly" window.
+    #[serde(default)]
+    pub weekly_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     pub terminal: String,
     pub accounts: Vec<Account>,
     pub projects: Vec<Project>,
+    /// Token ceilings for the tray usage lines. `#[serde(default)]` keeps legacy
+    /// configs (without the field) loading.
+    #[serde(default)]
+    pub usage_limits: UsageLimits,
 }
 
 impl Default for Config {
@@ -78,6 +99,7 @@ impl Default for Config {
                 inherit_overrides: HashMap::new(),
             }],
             projects: vec![],
+            usage_limits: UsageLimits::default(),
         }
     }
 }
@@ -208,6 +230,45 @@ mod tests {
             serde_json::to_string(&InheritDecision::Skip).unwrap(),
             "\"skip\""
         );
+    }
+
+    #[test]
+    fn test_should_default_usage_limits_to_none_when_config_created() {
+        let c = Config::default();
+        assert_eq!(c.usage_limits, UsageLimits::default());
+        assert_eq!(c.usage_limits.session_tokens, None);
+        assert_eq!(c.usage_limits.weekly_tokens, None);
+    }
+
+    #[test]
+    fn test_should_roundtrip_usage_limits_when_saved_and_loaded() {
+        let dir = std::env::temp_dir().join("cm_cfg_usage_limits_roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut original = Config::default();
+        original.usage_limits.session_tokens = Some(5_000_000);
+        original.usage_limits.weekly_tokens = Some(40_000_000);
+        original.save(&path).unwrap();
+        let loaded = Config::load(&path);
+        assert_eq!(loaded.usage_limits.session_tokens, Some(5_000_000));
+        assert_eq!(loaded.usage_limits.weekly_tokens, Some(40_000_000));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_default_usage_limits_when_field_absent_in_json() {
+        // Legacy config.json without the field must still load.
+        let dir = std::env::temp_dir().join("cm_cfg_legacy_no_usage_limits");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"terminal":"terminal","accounts":[],"projects":[]}"#,
+        )
+        .unwrap();
+        let loaded = Config::load(&path);
+        assert_eq!(loaded.usage_limits, UsageLimits::default());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

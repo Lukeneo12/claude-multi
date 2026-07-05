@@ -45,8 +45,11 @@ fn build_menu(
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let mut menu = MenuBuilder::new(app);
 
-    // Lower bound of the "today" usage window, computed once per menu build.
-    let today_start = usage::today_start(chrono::Local::now());
+    // Rolling usage windows (local proxies for the subscription limits, whose
+    // real reset lives server-side), computed once per menu build.
+    let now = chrono::Utc::now();
+    let session_since = usage::session_window_start(now);
+    let week_since = usage::week_window_start(now);
 
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
@@ -69,14 +72,30 @@ fn build_menu(
                         .enabled(false)
                         .build(app)?,
                 );
-                // Today's local token usage for this account (logged-in only).
-                // Disabled/informational, like the status line above it.
-                let usage_id = format!("usage::{}", account.id);
-                let summary = usage::account_usage(account, today_start);
+                // Local usage proxies for this account (logged-in only): rolling
+                // 5-hour "session" and 7-day "week" windows, each vs its global
+                // ceiling. Disabled/informational, like the status line above.
+                let session = usage::account_usage(account, session_since);
                 sub = sub.item(
-                    &MenuItemBuilder::with_id(usage_id, usage::format_tray_label(&summary))
-                        .enabled(false)
-                        .build(app)?,
+                    &MenuItemBuilder::with_id(
+                        format!("usage::session::{}", account.id),
+                        usage::format_window_line(
+                            "Session (5h)",
+                            &session,
+                            cfg.usage_limits.session_tokens,
+                        ),
+                    )
+                    .enabled(false)
+                    .build(app)?,
+                );
+                let week = usage::account_usage(account, week_since);
+                sub = sub.item(
+                    &MenuItemBuilder::with_id(
+                        format!("usage::week::{}", account.id),
+                        usage::format_window_line("Week (7d)", &week, cfg.usage_limits.weekly_tokens),
+                    )
+                    .enabled(false)
+                    .build(app)?,
                 );
                 let relogin_id = format!("relogin::{}", account.id);
                 sub = sub.item(&MenuItemBuilder::with_id(relogin_id, "Re-login…").build(app)?);
@@ -217,8 +236,9 @@ mod tests {
             }
         );
         assert_eq!(parse_menu_id("status::dino"), MenuAction::Unknown);
-        // Usage is an informational, disabled item (emits no event) — like status.
-        assert_eq!(parse_menu_id("usage::dino"), MenuAction::Unknown);
+        // Usage lines are informational, disabled items (emit no event) — like status.
+        assert_eq!(parse_menu_id("usage::session::dino"), MenuAction::Unknown);
+        assert_eq!(parse_menu_id("usage::week::dino"), MenuAction::Unknown);
     }
 
     #[test]

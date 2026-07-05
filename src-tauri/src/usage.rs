@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use crate::config::Account;
@@ -34,9 +34,24 @@ pub struct TokenTotals {
     pub cache_read: u64,
 }
 
+/// Cost-proportional weights, relative to input. The ratios are the same across
+/// Claude models (output 5×, cache-write 1.25×, cache-read 0.1× the input
+/// price), so a weighted token sum is ~proportional to dollar/limit consumption
+/// — unlike a raw sum, which is dominated by cheap, volatile cache reads and
+/// would not track the subscription `% used`.
+const W_OUTPUT: f64 = 5.0;
+const W_CACHE_WRITE: f64 = 1.25;
+const W_CACHE_READ: f64 = 0.1;
+
 impl TokenTotals {
-    pub fn total(&self) -> u64 {
-        self.input + self.output + self.cache_creation + self.cache_read
+    /// Cost-proportional "usage units": the metric the tray shows and the user
+    /// calibrates a ceiling against, so the percentage tracks real consumption.
+    pub fn weighted_usage(&self) -> u64 {
+        (self.input as f64
+            + self.output as f64 * W_OUTPUT
+            + self.cache_creation as f64 * W_CACHE_WRITE
+            + self.cache_read as f64 * W_CACHE_READ)
+            .round() as u64
     }
 
     fn add(&mut self, other: &TokenTotals) {
@@ -121,35 +136,47 @@ where
     summary
 }
 
-/// The instant local midnight (start of `now`'s day) occurs, as a UTC instant —
-/// the lower bound of the "today" window. On a DST-ambiguous midnight takes the
-/// earliest valid instant; on a nonexistent one degrades to `now`.
-pub fn today_start(now: DateTime<Local>) -> DateTime<Utc> {
-    let midnight = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .expect("00:00:00 is always a valid time");
-    Local
-        .from_local_datetime(&midnight)
-        .earliest()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|| now.with_timezone(&Utc))
+/// Lower bound of the rolling 5-hour "session" window — a local proxy for the
+/// subscription session block (whose real reset lives server-side).
+pub fn session_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - Duration::hours(5)
 }
 
-/// Compact human token count for a narrow tray label: `512`, `340k`, `1.2M`.
+/// Lower bound of the rolling 7-day "weekly" window — a local proxy for the
+/// weekly subscription limit (the constraint that usually binds first).
+pub fn week_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - Duration::days(7)
+}
+
+/// Compact human token count for a narrow tray label: `512`, `340k`, `1.2M`,
+/// `5M` (a whole number of millions drops the trailing `.0`).
 pub fn human_tokens(n: u64) -> String {
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {
         format!("{:.0}k", n as f64 / 1_000.0)
     } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        let m = format!("{:.1}", n as f64 / 1_000_000.0);
+        format!("{}M", m.strip_suffix(".0").unwrap_or(&m))
     }
 }
 
-/// Tray label for the "today" window: tokens only, no cost. E.g. `Today: 1.2M tok`.
-pub fn format_tray_label(summary: &UsageSummary) -> String {
-    format!("Today: {} tok", human_tokens(summary.tokens.total()))
+/// Tray label for one window. With a calibrated ceiling, shows
+/// `Session (5h): 1.2M / 5M · 24%`; without one, just `Session (5h): 1.2M tok`.
+/// The percentage can exceed 100% (a ceiling is only an estimate).
+pub fn format_window_line(name: &str, summary: &UsageSummary, limit: Option<u64>) -> String {
+    let used = summary.tokens.weighted_usage();
+    match limit {
+        Some(cap) if cap > 0 => {
+            let pct = (used as f64 / cap as f64 * 100.0).round() as u64;
+            format!(
+                "{name}: {} / {} · {pct}%",
+                human_tokens(used),
+                human_tokens(cap)
+            )
+        }
+        _ => format!("{name}: {} tok", human_tokens(used)),
+    }
 }
 
 /// Aggregate an account's usage since `since`, reading only inside the account's
@@ -260,8 +287,20 @@ mod tests {
                 cache_read: 50,
             }
         );
-        assert_eq!(s.tokens.total(), 390);
         assert_eq!(s.messages, 2);
+    }
+
+    #[test]
+    fn test_should_weight_tokens_by_cost_when_computing_usage() {
+        let t = TokenTotals {
+            input: 100,
+            output: 10,
+            cache_creation: 8,
+            cache_read: 200,
+        };
+        // 100 + 10*5 + 8*1.25 + 200*0.1 = 100 + 50 + 10 + 20 = 180
+        // (a raw sum would be 318, dominated by the 200 cache-read tokens).
+        assert_eq!(t.weighted_usage(), 180);
     }
 
     #[test]
@@ -274,7 +313,8 @@ mod tests {
         ];
         let s = aggregate_lines(lines.iter().map(String::as_str), since);
         assert_eq!(s.messages, 2);
-        assert_eq!(s.tokens.total(), 150);
+        // Only the two in-window messages' input tokens (100 + 50) are summed.
+        assert_eq!(s.tokens.input, 150);
     }
 
     #[test]
@@ -289,7 +329,7 @@ mod tests {
         ];
         let s = aggregate_lines(lines.iter().map(String::as_str), epoch());
         assert_eq!(s.messages, 1);
-        assert_eq!(s.tokens.total(), 42);
+        assert_eq!(s.tokens.input, 42);
     }
 
     #[test]
@@ -299,15 +339,16 @@ mod tests {
     }
 
     #[test]
-    fn test_should_compute_local_day_start_as_utc() {
-        let now = Local.with_ymd_and_hms(2026, 7, 5, 14, 30, 0).unwrap();
-        let expected = Local
-            .with_ymd_and_hms(2026, 7, 5, 0, 0, 0)
-            .unwrap()
-            .with_timezone(&Utc);
-        assert_eq!(today_start(now), expected);
-        // Invariant: the window start is never in the future and within a day.
-        assert!(today_start(now) <= now.with_timezone(&Utc));
+    fn test_should_offset_window_starts_by_5h_and_7d() {
+        let now = "2026-07-05T14:00:00.000Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(
+            session_window_start(now),
+            "2026-07-05T09:00:00.000Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            week_window_start(now),
+            "2026-06-28T14:00:00.000Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 
     #[test]
@@ -317,22 +358,52 @@ mod tests {
         assert_eq!(human_tokens(1_000), "1k");
         assert_eq!(human_tokens(340_000), "340k");
         assert_eq!(human_tokens(1_200_000), "1.2M");
+        assert_eq!(human_tokens(5_000_000), "5M");
     }
 
-    #[test]
-    fn test_should_render_today_tokens_only_when_formatting_label() {
-        let s = UsageSummary {
+    fn summary_of(total: u64) -> UsageSummary {
+        UsageSummary {
             tokens: TokenTotals {
-                input: 1_000_000,
-                output: 200_000,
+                input: total,
+                output: 0,
                 cache_creation: 0,
                 cache_read: 0,
             },
-            messages: 3,
-        };
-        assert_eq!(format_tray_label(&s), "Today: 1.2M tok");
-        // No monetary value in Phase 1.
-        assert!(!format_tray_label(&s).contains('$'));
+            messages: 1,
+        }
+    }
+
+    #[test]
+    fn test_should_show_percent_against_ceiling_when_limit_set() {
+        let s = summary_of(1_200_000);
+        assert_eq!(
+            format_window_line("Session (5h)", &s, Some(5_000_000)),
+            "Session (5h): 1.2M / 5M · 24%"
+        );
+        assert!(!format_window_line("Session (5h)", &s, Some(5_000_000)).contains('$'));
+    }
+
+    #[test]
+    fn test_should_show_raw_tokens_when_no_limit() {
+        let s = summary_of(1_200_000);
+        assert_eq!(
+            format_window_line("Week (7d)", &s, None),
+            "Week (7d): 1.2M tok"
+        );
+        // A zero ceiling is treated as "unset" (no division by zero).
+        assert_eq!(
+            format_window_line("Week (7d)", &s, Some(0)),
+            "Week (7d): 1.2M tok"
+        );
+    }
+
+    #[test]
+    fn test_should_allow_percent_over_100_when_over_ceiling() {
+        let s = summary_of(6_000_000);
+        assert_eq!(
+            format_window_line("Session (5h)", &s, Some(5_000_000)),
+            "Session (5h): 6M / 5M · 120%"
+        );
     }
 
     #[test]
@@ -355,7 +426,8 @@ mod tests {
         };
         let s = account_usage(&account, epoch());
         assert_eq!(s.messages, 2);
-        assert_eq!(s.tokens.total(), 330);
+        assert_eq!(s.tokens.input, 300); // 100 + 200 across both lines
+        assert_eq!(s.tokens.output, 30); // 10 + 20
         std::fs::remove_dir_all(&dir).ok();
     }
 
