@@ -1,16 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Account = { id: string; label: string; config_dir: string };
-export type Project = { id: string; label: string; path: string; account: string };
-// Calibrated token ceilings for the tray usage lines. `null` = no ceiling set
-// (the tray then shows raw tokens instead of a percentage).
+// Calibrated token ceilings for an account's tray usage lines. `null` = no
+// ceiling set (the tray then shows raw tokens instead of a percentage).
 export type UsageLimits = { session_tokens: number | null; weekly_tokens: number | null };
-export type Config = {
-  terminal: string;
-  accounts: Account[];
-  projects: Project[];
-  usage_limits: UsageLimits;
-};
+export type Account = { id: string; label: string; config_dir: string; usage_limits: UsageLimits };
+export type Project = { id: string; label: string; path: string; account: string };
+export type Config = { terminal: string; accounts: Account[]; projects: Project[] };
 export type TerminalInfo = { id: string; label: string };
 
 export type InheritDecision = "merge" | "skip";

@@ -16,7 +16,7 @@
 > subscription-limit source and confirmed it is **not obtainable locally or via
 > any supported interface** (see §4 → *Investigation*). Product chose a **local
 > rolling-window proxy**: two lines, `Session (5h)` and `Week (7d)`, each a
-> cost-weighted token sum over the window vs. a user-calibrated **global ceiling**,
+> cost-weighted token sum over the window vs. a user-calibrated **per-account ceiling**,
 > rendered `used / ceiling · %`. This section's original two-source framing is kept
 > for history; the Goals/AC/Approach below reflect the shipped design.
 
@@ -75,10 +75,11 @@ Approach → *Deferred: cost estimation*).
 - The displayed number is a **cost-weighted** token sum (output 5×, cache-write
   1.25×, cache-read 0.1× relative to input), so it tracks real consumption rather
   than being dominated by cheap, volatile cache reads.
-- A **global token ceiling** per window (`usage_limits.session_tokens`,
-  `usage_limits.weekly_tokens`, both `Option<u64>`), editable in Preferences. With
-  a ceiling set the line reads `used / ceiling · %` (percent may exceed 100%);
-  without one it reads `used tok`.
+- A **per-account token ceiling** per window (`Account.usage_limits.session_tokens`,
+  `…weekly_tokens`, both `Option<u64>`), editable in Preferences. Per-account
+  because plans differ across accounts (a work account may allow far more than a
+  personal one). With a ceiling set the line reads `used / ceiling · %` (percent may
+  exceed 100%); without one it reads `used tok`.
 - A logged-out account (status `Unknown`) renders **no** usage lines.
 - Reading is confined to each account's own `config_dir` — the default `~/.claude`
   is never written and never counted (invariant preserved).
@@ -93,8 +94,10 @@ Approach → *Deferred: cost estimation*).
   estimate, not a fetched limit.
 - **Any monetary / USD figure.** The cost weighting shapes the token number but no
   `$` is shown; a real cost estimate would need a maintained price table (deferred).
-- **Per-account ceilings.** One global ceiling per window for now (plans are
-  usually uniform across accounts); per-account override can come later.
+- **Auto-scaling the ceiling from the account's plan tier.** The tier *is* readable
+  locally (`oauthAccount.organizationRateLimitTier`, e.g. `default_claude_max_5x`),
+  but it isn't reliably numeric across accounts (seen: `default_raven`), so we don't
+  derive ceilings from it — the user calibrates per account. (Possible future hint.)
 - Real-time / streaming updates (on-open refresh only, no periodic tick).
 - Per-project breakdown in the tray; historical charts, exports, or persistence of
   computed aggregates.
@@ -123,9 +126,10 @@ Approach → *Deferred: cost estimation*).
   ceiling the label is `<name>: <used> / <ceiling> · <pct>%` (pct may exceed 100);
   with `None` or `0` ceiling it is `<name>: <used> tok`. Both ids round-trip
   through `parse_menu_id` to `MenuAction::Unknown` (disabled items emit no event).
-- [ ] **AC7:** `usage_limits` (`session_tokens`, `weekly_tokens`: `Option<u64>`)
-  round-trips through save/load, defaults to `None`, and legacy configs without the
-  field still load; the Preferences UI edits both and empty ⇒ `null`.
+- [ ] **AC7:** `Account.usage_limits` (`session_tokens`, `weekly_tokens`:
+  `Option<u64>`) round-trips through save/load, defaults to `None` per account, and
+  legacy accounts without the field still load; the Preferences UI edits both per
+  account and empty ⇒ `null`.
 - [ ] **AC8:** A malformed / partially-written `.jsonl` line is skipped without
   aborting aggregation of the rest of the file (robust to concurrent live writes).
 - [ ] **AC9:** `cargo test` passes and `cargo clippy --all-targets -- -D warnings`
@@ -147,7 +151,7 @@ usage.rs (new)
  ├─ pure:  session_window_start(now) / week_window_start(now)     # now−5h / now−7d
  ├─ pure:  human_tokens(n) / format_window_line(name, &summary, Option<u64>)
  └─ edge:  account_usage(&Account, since) -> UsageSummary         # walk projects/**/*.jsonl
-config.rs:  Config.usage_limits: UsageLimits { session_tokens, weekly_tokens: Option<u64> }
+config.rs:  Account.usage_limits: UsageLimits { session_tokens, weekly_tokens: Option<u64> }
 ```
 
 ### Data model
@@ -169,9 +173,15 @@ Verified (incl. a `claude-code-guide` consult) that Anthropic's session/weekly
   account's OAuth token (Keychain on macOS — a single global entry, so not cleanly
   per-account; reading it is sensitive and gated).
 
-That path is fragile, credential-handling, and ToS-gray, so product chose the
-local proxy. The rolling windows + cost weighting approximate the shape of the
-limits; the user calibrates the ceiling against `/usage`'s percentage once.
+Confirmed by searching all of the user's transcripts and configs (only strings
+from this very conversation matched). One useful thing *is* local: each account's
+plan tier at `oauthAccount.organizationRateLimitTier` (e.g. `default_claude_max_5x`)
+— but it isn't reliably numeric (also seen: `default_raven`), so it can't drive an
+auto-scaled ceiling; it's at most a future calibration hint.
+
+That endpoint path is fragile, credential-handling, and ToS-gray, so product chose
+the local proxy. The rolling windows + cost weighting approximate the shape of the
+limits; the user calibrates a **per-account** ceiling against `/usage` once.
 
 ### Tray wiring
 
@@ -210,9 +220,11 @@ limits; the user calibrates the ceiling against `/usage`'s percentage once.
   (cheap, volatile) and wouldn't track `% used`. Weights `output 5× / cache-write
   1.25× / cache-read 0.1×` mirror the (model-invariant) pricing ratios, so the
   number is ~proportional to cost/limit consumption.
-- **Decision 4 — Global, user-calibrated ceiling.** Anthropic's real limit isn't
-  locally available; the user sets one ceiling per window (global; plans are usually
-  uniform) and calibrates against `/usage`. `None` ⇒ show raw usage.
+- **Decision 4 — Per-account, user-calibrated ceiling.** Anthropic's real limit
+  isn't locally available; the user sets a ceiling per window **per account** (plans
+  differ — a work account may allow far more than a personal one) and calibrates
+  against `/usage`. `None` ⇒ show raw usage. (The plan tier is locally readable but
+  not reliably numeric, so it isn't used to auto-scale — see Investigation.)
 - **Decision 5 — New `usage.rs`, pure core + edge I/O; disabled tray items.** Matches
   the repo layout (`launcher`/`inherit`/`config`) and the `status::<id>` menu-id
   pattern; minimal surface change.
@@ -256,13 +268,14 @@ _All product/UX questions resolved during implementation (2026-07-05)._
 - **What to show** → session-limit "remaining", not raw spend. Real limit isn't
   locally available → local rolling-window proxy. ✅
 - **Windows** → both **Session (5h)** and **Week (7d)**. ✅
-- **Ceiling** → **global** (one per window), user-calibrated; `None` ⇒ raw usage. ✅
+- **Ceiling** → **per-account** (one per window each), user-calibrated; `None` ⇒ raw. ✅
 - **Metric** → **cost-weighted** tokens (not raw), so it tracks consumption. ✅
 - **Logged-out accounts** → **hide** the usage lines. ✅
 - **Refresh cadence** → **on-open only**, no periodic tick. ✅
 
 ### Possible follow-ups (not in this spec)
-- Per-account ceiling override (if plans differ across accounts).
+- Show each account's plan tier (`organizationRateLimitTier`) next to its ceiling
+  inputs as a calibration hint.
 - Auto-suggest a ceiling from a one-time `/usage` percentage the user pastes in.
 
 ---

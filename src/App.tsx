@@ -56,9 +56,12 @@ export default function App() {
         const projects = cfg.projects.map((p) =>
           validIds.has(p.account) ? p : { ...p, account: firstId }
         );
-        // Legacy configs may predate usage_limits; default it so the inputs bind.
-        const usage_limits = cfg.usage_limits ?? { session_tokens: null, weekly_tokens: null };
-        setConfig({ ...cfg, projects, usage_limits });
+        // Legacy accounts may predate usage_limits; default it so the inputs bind.
+        const accounts = cfg.accounts.map((a) => ({
+          ...a,
+          usage_limits: a.usage_limits ?? { session_tokens: null, weekly_tokens: null },
+        }));
+        setConfig({ ...cfg, accounts, projects });
         setInheritAccount(firstId);
         setTerminals(terms);
       } catch (e) {
@@ -110,8 +113,9 @@ export default function App() {
   const patch = (next: Partial<Config>) => setConfig({ ...cfg, ...next });
   const setAccounts = (accounts: Account[]) => patch({ accounts });
   const setProjects = (projects: Project[]) => patch({ projects });
-  const setUsageLimits = (u: Partial<UsageLimits>) =>
-    patch({ usage_limits: { ...cfg.usage_limits, ...u } });
+  // Patch one account's usage ceilings immutably.
+  const setAccountLimits = (i: number, u: Partial<UsageLimits>) =>
+    setAccounts(updateAt(cfg.accounts, i, { usage_limits: { ...cfg.accounts[i].usage_limits, ...u } }));
 
   // Parse a token-ceiling input: empty ⇒ null (unset); otherwise a non-negative
   // integer, ignoring anything that isn't a clean number.
@@ -124,7 +128,10 @@ export default function App() {
 
   const addAccount = () => {
     const id = nextId(cfg.accounts.map((a) => a.id), "a");
-    setAccounts([...cfg.accounts, { id, label: "New account", config_dir: `${CLAUDE_DIR_PREFIX}new` }]);
+    setAccounts([...cfg.accounts, {
+      id, label: "New account", config_dir: `${CLAUDE_DIR_PREFIX}new`,
+      usage_limits: { session_tokens: null, weekly_tokens: null },
+    }]);
   };
 
   const addProject = () => {
@@ -182,72 +189,71 @@ export default function App() {
       </section>
 
       <section className="card">
-        <h2 className="card__title">Usage limits</h2>
-        <p className="card__hint">
-          The tray shows each account's rolling token usage — <code>Session (5h)</code> and
-          {" "}<code>Week (7d)</code> — computed locally from its session logs. Set an
-          approximate token ceiling here to see a <code>used / ceiling · %</code>. There's no
-          local source for Anthropic's real limits, so calibrate: when <code>/usage</code> shows
-          e.g. 13% used, your ceiling ≈ current tokens ÷ 0.13. Leave blank to show raw tokens.
-        </p>
-        <div className="row">
-          <label className="row__grow">
-            Session (5h) ceiling
-            <input
-              className="input"
-              type="number"
-              min={0}
-              placeholder="e.g. 5000000"
-              value={cfg.usage_limits.session_tokens ?? ""}
-              onChange={(e) => setUsageLimits({ session_tokens: parseCeiling(e.target.value) })}
-            />
-          </label>
-          <label className="row__grow">
-            Week (7d) ceiling
-            <input
-              className="input"
-              type="number"
-              min={0}
-              placeholder="e.g. 40000000"
-              value={cfg.usage_limits.weekly_tokens ?? ""}
-              onChange={(e) => setUsageLimits({ weekly_tokens: parseCeiling(e.target.value) })}
-            />
-          </label>
-        </div>
-      </section>
-
-      <section className="card">
         <div className="card__head">
           <h2 className="card__title">Accounts</h2>
           <button className="btn btn--ghost" onClick={addAccount}>+ Add account</button>
         </div>
-        <p className="card__hint">Each account is isolated in its own <code>{CLAUDE_DIR_PREFIX}…</code> config directory.</p>
+        <p className="card__hint">
+          Each account is isolated in its own <code>{CLAUDE_DIR_PREFIX}…</code> config directory.
+          The tray shows its rolling token usage — <code>Session (5h)</code> and{" "}
+          <code>Week (7d)</code>. Set an approximate per-account token ceiling to see{" "}
+          <code>used / ceiling · %</code> (plans differ, so a work account may allow more than a
+          personal one). There's no local source for Anthropic's real limits, so calibrate: when
+          {" "}<code>/usage</code> shows e.g. 13% used, the ceiling ≈ current tokens ÷ 0.13. Leave
+          blank to show raw tokens.
+        </p>
 
         {cfg.accounts.length === 0 && <p className="muted">No accounts yet.</p>}
         {cfg.accounts.map((a, i) => (
-          <div className="row" key={a.id}>
-            <input
-              className="input row__grow"
-              placeholder="Label (e.g. Personal)"
-              value={a.label}
-              onChange={(e) => setAccounts(updateAt(cfg.accounts, i, { label: e.target.value }))}
-            />
-            <span className="affix">
-              <span className="affix__prefix">{CLAUDE_DIR_PREFIX}</span>
+          <div className="account" key={a.id}>
+            <div className="row">
               <input
-                className="input affix__input"
-                placeholder="suffix"
-                value={suffixOf(a.config_dir)}
-                onChange={(e) =>
-                  setAccounts(updateAt(cfg.accounts, i, { config_dir: CLAUDE_DIR_PREFIX + e.target.value }))
-                }
+                className="input row__grow"
+                placeholder="Label (e.g. Personal)"
+                value={a.label}
+                onChange={(e) => setAccounts(updateAt(cfg.accounts, i, { label: e.target.value }))}
               />
-            </span>
-            <button
-              className="btn btn--icon"
-              title="Remove account"
-              onClick={() => setAccounts(cfg.accounts.filter((_, j) => j !== i))}
-            >✕</button>
+              <span className="affix">
+                <span className="affix__prefix">{CLAUDE_DIR_PREFIX}</span>
+                <input
+                  className="input affix__input"
+                  placeholder="suffix"
+                  value={suffixOf(a.config_dir)}
+                  onChange={(e) =>
+                    setAccounts(updateAt(cfg.accounts, i, { config_dir: CLAUDE_DIR_PREFIX + e.target.value }))
+                  }
+                />
+              </span>
+              <button
+                className="btn btn--icon"
+                title="Remove account"
+                onClick={() => setAccounts(cfg.accounts.filter((_, j) => j !== i))}
+              >✕</button>
+            </div>
+            <div className="row account__limits">
+              <label className="field">
+                <span className="field__label">Session (5h) ceiling</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  placeholder="tokens, e.g. 5000000"
+                  value={a.usage_limits.session_tokens ?? ""}
+                  onChange={(e) => setAccountLimits(i, { session_tokens: parseCeiling(e.target.value) })}
+                />
+              </label>
+              <label className="field">
+                <span className="field__label">Week (7d) ceiling</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  placeholder="tokens, e.g. 40000000"
+                  value={a.usage_limits.weekly_tokens ?? ""}
+                  onChange={(e) => setAccountLimits(i, { weekly_tokens: parseCeiling(e.target.value) })}
+                />
+              </label>
+            </div>
           </div>
         ))}
       </section>

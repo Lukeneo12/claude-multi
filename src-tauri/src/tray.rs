@@ -82,7 +82,7 @@ fn build_menu(
                         usage::format_window_line(
                             "Session (5h)",
                             &session,
-                            cfg.usage_limits.session_tokens,
+                            account.usage_limits.session_tokens,
                         ),
                     )
                     .enabled(false)
@@ -92,7 +92,7 @@ fn build_menu(
                 sub = sub.item(
                     &MenuItemBuilder::with_id(
                         format!("usage::week::{}", account.id),
-                        usage::format_window_line("Week (7d)", &week, cfg.usage_limits.weekly_tokens),
+                        usage::format_window_line("Week (7d)", &week, account.usage_limits.weekly_tokens),
                     )
                     .enabled(false)
                     .build(app)?,

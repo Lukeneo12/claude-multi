@@ -423,6 +423,7 @@ mod tests {
             label: "X".into(),
             config_dir: dir.to_string_lossy().to_string(),
             inherit_overrides: StdHashMap::new(),
+            usage_limits: crate::config::UsageLimits::default(),
         };
         let s = account_usage(&account, epoch());
         assert_eq!(s.messages, 2);
@@ -438,6 +439,7 @@ mod tests {
             label: "X".into(),
             config_dir: "/nonexistent/cm-usage-missing".into(),
             inherit_overrides: StdHashMap::new(),
+            usage_limits: crate::config::UsageLimits::default(),
         };
         let s = account_usage(&account, epoch());
         assert_eq!(s, UsageSummary::default());
