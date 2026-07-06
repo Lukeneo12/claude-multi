@@ -3,9 +3,9 @@
 //! Each account keeps its transcripts under `<config_dir>/projects/**/*.jsonl`,
 //! one JSON record per line. Assistant messages carry a `message.usage` object
 //! with token counts and a top-level ISO-8601 `timestamp`. This module sums
-//! those counts for a time window (the tray shows "today"), staying strictly
-//! inside the account's own `config_dir` — the default `~/.claude` is never read
-//! here (project invariant).
+//! those counts over rolling time windows (the tray shows a 5-hour "session" and
+//! a 7-day "week"), staying strictly inside the account's own `config_dir` — the
+//! default `~/.claude` is never read here (project invariant).
 //!
 //! Split mirrors the rest of the crate: a pure aggregation core (fully
 //! unit-tested without touching the filesystem) plus a thin edge that walks the
@@ -24,8 +24,8 @@ use serde::Deserialize;
 use crate::config::Account;
 use crate::paths::expand_tilde;
 
-/// Token counts summed across messages, split by kind so callers can format (or
-/// later price) them. All four kinds count toward [`TokenTotals::total`].
+/// Token counts summed across messages, split by kind so the cost weighting in
+/// [`TokenTotals::weighted_usage`] can price each kind differently.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenTotals {
     pub input: u64,
@@ -123,7 +123,10 @@ fn parse_line(line: &str) -> Option<(DateTime<Utc>, TokenTotals)> {
 /// Sum pre-parsed `(timestamp, tokens)` records, counting only those at or after
 /// `since`. Windowing is applied here — not baked into the parse/cache — so the
 /// same cached records serve any number of windows.
-fn aggregate_records(records: &[(DateTime<Utc>, TokenTotals)], since: DateTime<Utc>) -> UsageSummary {
+fn aggregate_records(
+    records: &[(DateTime<Utc>, TokenTotals)],
+    since: DateTime<Utc>,
+) -> UsageSummary {
     let mut summary = UsageSummary::default();
     for (ts, tokens) in records {
         if *ts >= since {

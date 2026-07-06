@@ -252,8 +252,14 @@ mod tests {
         original.accounts[0].usage_limits.weekly_tokens = Some(40_000_000);
         original.save(&path).unwrap();
         let loaded = Config::load(&path);
-        assert_eq!(loaded.accounts[0].usage_limits.session_tokens, Some(5_000_000));
-        assert_eq!(loaded.accounts[0].usage_limits.weekly_tokens, Some(40_000_000));
+        assert_eq!(
+            loaded.accounts[0].usage_limits.session_tokens,
+            Some(5_000_000)
+        );
+        assert_eq!(
+            loaded.accounts[0].usage_limits.weekly_tokens,
+            Some(40_000_000)
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
