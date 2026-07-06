@@ -147,10 +147,12 @@ line into `tray.rs`. `config`/`commands` stay the source of truth and glue.
 ```
 usage.rs (new)
  ├─ pure:  TokenTotals { weighted_usage() }, UsageSummary
- ├─ pure:  aggregate_lines(lines, since) -> UsageSummary          # parse + filter ≥since + sum
+ ├─ pure:  parse_line(&str) -> Option<(ts, tokens)>               # assistant+usage only
+ ├─ pure:  aggregate_records(&[(ts, tokens)], since) -> UsageSummary  # filter ≥since + sum
  ├─ pure:  session_window_start(now) / week_window_start(now)     # now−5h / now−7d
  ├─ pure:  human_tokens(n) / format_window_line(name, &summary, Option<u64>)
- └─ edge:  account_usage(&Account, since) -> UsageSummary         # walk projects/**/*.jsonl
+ ├─ edge:  file_records(path, not_before) -> Arc<Vec<(ts,tokens)>>    # cached parse (path,mtime,size)
+ └─ edge:  account_usage(&Account, &[since]) -> Vec<UsageSummary> # one pass, one summary/window
 config.rs:  Account.usage_limits: UsageLimits { session_tokens, weekly_tokens: Option<u64> }
 ```
 
@@ -191,18 +193,22 @@ limits; the user calibrates a **per-account** ceiling against `/usage` once.
 - Windows computed once per build from `chrono::Utc::now()`.
 - `parse_menu_id("usage::session::<id>")` / `("usage::week::<id>")` resolve to
   `MenuAction::Unknown` (disabled items emit no event; no handler branch needed).
-- Labels via `format_window_line`, using `cfg.usage_limits.{session,weekly}_tokens`
+- Labels via `format_window_line`, using `account.usage_limits.{session,weekly}_tokens`
   as the ceiling. Compact human format (`1.2M`, `340k`, `5M`).
+- `account_usage(account, &[session_since, week_since])` returns both windows from a
+  **single** traversal + parse per file (no double I/O).
 
 ### Performance
 
 - Parsing every `.jsonl` on each menu build could be heavy for large histories.
   Mitigations, in order of preference:
-  1. **mtime + size cache**: memoize per-file aggregates keyed by `(path, mtime,
-     len)`; only re-parse changed files. Cache lives in a `Mutex`/`OnceCell` in the
-     Tauri state, not persisted.
-  2. **Window prefilter**: skip files whose mtime is older than the window
-     lower-bound entirely (they can hold no message in the window).
+  1. **Per-file parsed-record cache**: memoize a file's parsed records keyed by
+     `(path, mtime, size)` — crucially **not** the window, so it hits across menu
+     builds and serves both windows from one parse. One entry per path (replaced on
+     change), so the cache stays bounded. Process-lifetime `Mutex<HashMap>`
+     (`OnceLock`), not persisted.
+  2. **Window prefilter**: skip files whose mtime is older than the widest window
+     (7d) before reading/caching them (they can hold no message in any window).
   3. If still slow, compute usage **off the UI thread** and update the tray via
      `refresh_tray` when ready.
 - Shipped: (1)+(2). Measured fine on real data (a 7-day window over a ~1000-message

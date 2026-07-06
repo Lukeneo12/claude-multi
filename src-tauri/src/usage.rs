@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use chrono::{DateTime, Duration, Utc};
@@ -66,7 +66,9 @@ impl TokenTotals {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsageSummary {
     pub tokens: TokenTotals,
-    /// Assistant messages counted in the window (useful for "no activity" UX).
+    /// Assistant messages counted in the window. Not shown in the tray today;
+    /// kept as an aggregation invariant (asserted by tests) and reserved for a
+    /// future "no activity" hint.
     pub messages: u64,
 }
 
@@ -118,19 +120,15 @@ fn parse_line(line: &str) -> Option<(DateTime<Utc>, TokenTotals)> {
     ))
 }
 
-/// Sum usage across `lines`, counting only messages whose timestamp is at or
-/// after `since`. Malformed or non-assistant lines are skipped.
-pub fn aggregate_lines<'a, I>(lines: I, since: DateTime<Utc>) -> UsageSummary
-where
-    I: IntoIterator<Item = &'a str>,
-{
+/// Sum pre-parsed `(timestamp, tokens)` records, counting only those at or after
+/// `since`. Windowing is applied here — not baked into the parse/cache — so the
+/// same cached records serve any number of windows.
+fn aggregate_records(records: &[(DateTime<Utc>, TokenTotals)], since: DateTime<Utc>) -> UsageSummary {
     let mut summary = UsageSummary::default();
-    for line in lines {
-        if let Some((ts, tokens)) = parse_line(line) {
-            if ts >= since {
-                summary.tokens.add(&tokens);
-                summary.messages += 1;
-            }
+    for (ts, tokens) in records {
+        if *ts >= since {
+            summary.tokens.add(tokens);
+            summary.messages += 1;
         }
     }
     summary
@@ -154,7 +152,13 @@ pub fn human_tokens(n: u64) -> String {
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {
-        format!("{:.0}k", n as f64 / 1_000.0)
+        // Guard the boundary: 999_999 rounds to 1000k, which should read as 1M.
+        let k = (n as f64 / 1_000.0).round();
+        if k >= 1_000.0 {
+            "1M".to_string()
+        } else {
+            format!("{k:.0}k")
+        }
     } else {
         let m = format!("{:.1}", n as f64 / 1_000_000.0);
         format!("{}M", m.strip_suffix(".0").unwrap_or(&m))
@@ -179,22 +183,31 @@ pub fn format_window_line(name: &str, summary: &UsageSummary, limit: Option<u64>
     }
 }
 
-/// Aggregate an account's usage since `since`, reading only inside the account's
-/// own `config_dir`. A missing dir yields a zeroed summary (never an error,
-/// never a read of the default `~/.claude`).
-pub fn account_usage(account: &Account, since: DateTime<Utc>) -> UsageSummary {
+/// Aggregate an account's usage for each of `sinces` (window lower-bounds) in a
+/// single pass over its transcripts, returning one summary per bound in order.
+/// Reads only inside the account's own `config_dir`; a missing dir yields zeroed
+/// summaries (never an error, never a read of the default `~/.claude`).
+pub fn account_usage(account: &Account, sinces: &[DateTime<Utc>]) -> Vec<UsageSummary> {
+    // The widest window: a file untouched since then can't contribute to any.
+    let Some(oldest) = sinces.iter().copied().min() else {
+        return Vec::new();
+    };
+
     let projects = expand_tilde(&account.config_dir).join("projects");
     let mut files = Vec::new();
     collect_jsonl(&projects, &mut files);
 
-    let mut summary = UsageSummary::default();
+    // One traversal + one (cached) parse per file, then window each in memory.
+    let mut records: Vec<(DateTime<Utc>, TokenTotals)> = Vec::new();
     for path in files {
-        if let Some(agg) = file_usage(&path, since) {
-            summary.tokens.add(&agg.tokens);
-            summary.messages += agg.messages;
+        if let Some(file) = file_records(&path, oldest) {
+            records.extend(file.iter().copied());
         }
     }
-    summary
+    sinces
+        .iter()
+        .map(|since| aggregate_records(&records, *since))
+        .collect()
 }
 
 /// Recursively collect `*.jsonl` files under `dir`. A missing or unreadable dir
@@ -213,46 +226,55 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Per-file aggregate with an `(mtime, size)` memo cache. Files last modified
-/// before `since` are skipped entirely (they can hold no message in the window),
-/// which — combined with the cache — keeps repeated menu builds cheap.
-fn file_usage(path: &Path, since: DateTime<Utc>) -> Option<UsageSummary> {
+/// Parsed records for a file, shared cheaply across menu builds via `Arc`.
+type Records = Arc<Vec<(DateTime<Utc>, TokenTotals)>>;
+
+/// A file's parsed usage records, memoized by `(mtime, size)`. Files last
+/// modified before `not_before` are skipped (they hold nothing in any window),
+/// so a cold cache never parses ancient history. The key is `(path, mtime,
+/// size)` — deliberately **not** the window — so the same parse serves every
+/// window and hits across menu builds. Keyed by path with the entry replaced on
+/// change, so the cache holds at most one entry per file.
+fn file_records(path: &Path, not_before: DateTime<Utc>) -> Option<Records> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
 
-    // Prefilter: a file untouched since the window start holds nothing new.
-    if DateTime::<Utc>::from(mtime) < since {
+    // Prefilter: a file untouched since the widest window start holds nothing.
+    if DateTime::<Utc>::from(mtime) < not_before {
         return None;
     }
+    let mtime_secs = mtime.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let size = meta.len();
 
-    let key = CacheKey {
-        path: path.to_path_buf(),
-        mtime_secs: mtime.duration_since(UNIX_EPOCH).ok()?.as_secs(),
-        size: meta.len(),
-        since_millis: since.timestamp_millis(),
-    };
-    if let Some(hit) = file_cache().lock().unwrap().get(&key).copied() {
-        return Some(hit);
+    if let Some(cached) = file_cache().lock().unwrap().get(path) {
+        if cached.mtime_secs == mtime_secs && cached.size == size {
+            return Some(Arc::clone(&cached.records));
+        }
     }
 
     let contents = std::fs::read_to_string(path).ok()?;
-    let summary = aggregate_lines(contents.lines(), since);
-    file_cache().lock().unwrap().insert(key, summary);
-    Some(summary)
+    let records: Records = Arc::new(contents.lines().filter_map(parse_line).collect());
+    file_cache().lock().unwrap().insert(
+        path.to_path_buf(),
+        CachedFile {
+            mtime_secs,
+            size,
+            records: Arc::clone(&records),
+        },
+    );
+    Some(records)
 }
 
-/// Cache key: same file (path) + same bytes (mtime, size) + same window (since)
-/// ⇒ same aggregate, so we can skip re-parsing across menu rebuilds.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
-    path: PathBuf,
+/// Cache entry: a file's parsed records plus the `(mtime, size)` they came from.
+/// Re-parsed and replaced when either changes.
+struct CachedFile {
     mtime_secs: u64,
     size: u64,
-    since_millis: i64,
+    records: Records,
 }
 
-fn file_cache() -> &'static Mutex<HashMap<CacheKey, UsageSummary>> {
-    static CACHE: OnceLock<Mutex<HashMap<CacheKey, UsageSummary>>> = OnceLock::new();
+fn file_cache() -> &'static Mutex<HashMap<PathBuf, CachedFile>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedFile>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -271,13 +293,19 @@ mod tests {
         )
     }
 
+    /// Parse lines the way `file_records` does: skip anything not an assistant
+    /// message with usage.
+    fn parse_all(lines: &[String]) -> Vec<(DateTime<Utc>, TokenTotals)> {
+        lines.iter().filter_map(|l| parse_line(l)).collect()
+    }
+
     #[test]
     fn test_should_sum_all_token_kinds_when_aggregating() {
-        let lines = [
+        let records = parse_all(&[
             assistant_line("2026-07-05T10:00:00.000Z", 100, 10, 5, 20),
             assistant_line("2026-07-05T11:00:00.000Z", 200, 20, 5, 30),
-        ];
-        let s = aggregate_lines(lines.iter().map(String::as_str), epoch());
+        ]);
+        let s = aggregate_records(&records, epoch());
         assert_eq!(
             s.tokens,
             TokenTotals {
@@ -306,12 +334,12 @@ mod tests {
     #[test]
     fn test_should_exclude_messages_before_since_when_aggregating() {
         let since = "2026-07-05T00:00:00.000Z".parse::<DateTime<Utc>>().unwrap();
-        let lines = [
+        let records = parse_all(&[
             assistant_line("2026-07-04T23:59:59.000Z", 999, 999, 999, 999), // before
             assistant_line("2026-07-05T00:00:00.000Z", 100, 0, 0, 0),       // boundary in
             assistant_line("2026-07-05T09:00:00.000Z", 50, 0, 0, 0),        // in
-        ];
-        let s = aggregate_lines(lines.iter().map(String::as_str), since);
+        ]);
+        let s = aggregate_records(&records, since);
         assert_eq!(s.messages, 2);
         // Only the two in-window messages' input tokens (100 + 50) are summed.
         assert_eq!(s.tokens.input, 150);
@@ -319,22 +347,22 @@ mod tests {
 
     #[test]
     fn test_should_skip_malformed_and_non_assistant_lines() {
-        let lines = [
+        let records = parse_all(&[
             "{ this is not json".to_string(),
             "".to_string(),
             r#"{"type":"user","message":{"content":"hi"}}"#.to_string(),
             r#"{"type":"assistant","timestamp":"2026-07-05T10:00:00.000Z","message":{}}"#
                 .to_string(), // no usage
             assistant_line("2026-07-05T10:00:00.000Z", 42, 0, 0, 0),
-        ];
-        let s = aggregate_lines(lines.iter().map(String::as_str), epoch());
+        ]);
+        let s = aggregate_records(&records, epoch());
         assert_eq!(s.messages, 1);
         assert_eq!(s.tokens.input, 42);
     }
 
     #[test]
-    fn test_should_return_zero_when_no_lines() {
-        let s = aggregate_lines(std::iter::empty::<&str>(), epoch());
+    fn test_should_return_zero_when_no_records() {
+        let s = aggregate_records(&[], epoch());
         assert_eq!(s, UsageSummary::default());
     }
 
@@ -359,6 +387,9 @@ mod tests {
         assert_eq!(human_tokens(340_000), "340k");
         assert_eq!(human_tokens(1_200_000), "1.2M");
         assert_eq!(human_tokens(5_000_000), "5M");
+        // Boundary: must read as 1M, not 1000k.
+        assert_eq!(human_tokens(999_999), "1M");
+        assert_eq!(human_tokens(999_499), "999k");
     }
 
     fn summary_of(total: u64) -> UsageSummary {
@@ -425,10 +456,14 @@ mod tests {
             inherit_overrides: StdHashMap::new(),
             usage_limits: crate::config::UsageLimits::default(),
         };
-        let s = account_usage(&account, epoch());
-        assert_eq!(s.messages, 2);
-        assert_eq!(s.tokens.input, 300); // 100 + 200 across both lines
-        assert_eq!(s.tokens.output, 30); // 10 + 20
+        // Two windows in one pass: epoch (all) and a bound after both messages.
+        let after_all = "2026-07-05T12:00:00.000Z".parse::<DateTime<Utc>>().unwrap();
+        let sums = account_usage(&account, &[epoch(), after_all]);
+        assert_eq!(sums.len(), 2);
+        assert_eq!(sums[0].messages, 2);
+        assert_eq!(sums[0].tokens.input, 300); // 100 + 200 across both lines
+        assert_eq!(sums[0].tokens.output, 30); // 10 + 20
+        assert_eq!(sums[1], UsageSummary::default()); // nothing after both
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -441,7 +476,7 @@ mod tests {
             inherit_overrides: StdHashMap::new(),
             usage_limits: crate::config::UsageLimits::default(),
         };
-        let s = account_usage(&account, epoch());
-        assert_eq!(s, UsageSummary::default());
+        let sums = account_usage(&account, &[epoch()]);
+        assert_eq!(sums, vec![UsageSummary::default()]);
     }
 }
