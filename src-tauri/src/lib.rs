@@ -5,6 +5,7 @@ mod inherit;
 mod launcher;
 mod paths;
 mod tray;
+mod usage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

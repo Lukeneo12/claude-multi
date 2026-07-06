@@ -103,6 +103,17 @@ body {
 .row__grow { flex: 1 1 auto; min-width: 0; }
 .row__label { flex: 0 0 130px; }
 
+/* One account block: the main row plus its per-account usage ceilings. */
+.account {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.account:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: none; }
+.account__limits { margin-top: 8px; margin-left: 4px; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; }
+.field__label { font-size: 11px; color: var(--muted); }
+
 .input,
 .select {
   height: 32px;

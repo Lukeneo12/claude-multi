@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-account usage in the tray**: each logged-in account now shows two
+  informational lines under its email status — `Session (5h)` and `Week (7d)` —
+  proxying the subscription's rolling session and weekly limits. Each sums the
+  account's token consumption over the window from its own
+  `<config_dir>/projects/**/*.jsonl` transcripts, weighted by cost so the number
+  tracks real consumption instead of being dominated by cheap cache reads.
+  Reading stays strictly inside each account's own config dir — the default
+  `~/.claude` is never counted. With a calibrated **per-account token ceiling**
+  (set in Preferences, one for each window) the line reads `used / ceiling · %`;
+  without one it shows raw usage. Ceilings are per-account because plans differ
+  (a work account may allow far more than a personal one). Anthropic's real
+  limits live server-side and aren't available locally, so the ceiling is
+  user-set (calibrate against `/usage`'s percentage). Refreshes when the tray
+  menu opens. See `docs/specs/2026-07-05/spec-show-account-usage-in-tray.md`.
+
 ## [0.3.0] — 2026-07-02
 
 ### Added

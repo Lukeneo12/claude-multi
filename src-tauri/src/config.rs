@@ -23,6 +23,11 @@ pub struct Account {
     /// keeps legacy configs (without the field) loading.
     #[serde(default)]
     pub inherit_overrides: HashMap<String, InheritDecision>,
+    /// Calibrated token ceilings for this account's tray usage lines. Per-account
+    /// because plans differ (a corp account may allow far more than a personal
+    /// one). `#[serde(default)]` keeps legacy configs loading.
+    #[serde(default)]
+    pub usage_limits: UsageLimits,
 }
 
 impl Account {
@@ -53,6 +58,21 @@ pub struct Project {
     pub account: String,
 }
 
+/// Calibrated token ceilings for an account's tray usage lines. There is no
+/// supported/local source for Anthropic's real subscription limits (they live
+/// server-side and aren't persisted), so the user sets an approximate ceiling —
+/// e.g. by cross-referencing `/usage`'s percentage once — and the tray renders
+/// `used / ceiling · %`. `None` = no ceiling set (tray shows raw tokens).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UsageLimits {
+    /// Approximate token ceiling for the rolling 5-hour "session" window.
+    #[serde(default)]
+    pub session_tokens: Option<u64>,
+    /// Approximate token ceiling for the rolling 7-day "weekly" window.
+    #[serde(default)]
+    pub weekly_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     pub terminal: String,
@@ -76,6 +96,7 @@ impl Default for Config {
                 label: "Personal".into(),
                 config_dir: "~/.claude-personal".into(),
                 inherit_overrides: HashMap::new(),
+                usage_limits: UsageLimits::default(),
             }],
             projects: vec![],
         }
@@ -154,6 +175,7 @@ mod tests {
             label: "X".into(),
             config_dir: dir.to_string_lossy().to_string(),
             inherit_overrides: HashMap::new(),
+            usage_limits: UsageLimits::default(),
         };
         assert_eq!(
             account.logged_in_email().as_deref(),
@@ -169,6 +191,7 @@ mod tests {
             label: "X".into(),
             config_dir: "/nonexistent/cm-account-dir".into(),
             inherit_overrides: HashMap::new(),
+            usage_limits: UsageLimits::default(),
         };
         assert_eq!(account.logged_in_email(), None);
     }
@@ -208,6 +231,52 @@ mod tests {
             serde_json::to_string(&InheritDecision::Skip).unwrap(),
             "\"skip\""
         );
+    }
+
+    #[test]
+    fn test_should_default_usage_limits_to_none_when_account_created() {
+        let c = Config::default();
+        let personal = c.account("personal").unwrap();
+        assert_eq!(personal.usage_limits, UsageLimits::default());
+        assert_eq!(personal.usage_limits.session_tokens, None);
+        assert_eq!(personal.usage_limits.weekly_tokens, None);
+    }
+
+    #[test]
+    fn test_should_roundtrip_usage_limits_when_saved_and_loaded() {
+        let dir = std::env::temp_dir().join("cm_cfg_usage_limits_roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut original = Config::default();
+        original.accounts[0].usage_limits.session_tokens = Some(5_000_000);
+        original.accounts[0].usage_limits.weekly_tokens = Some(40_000_000);
+        original.save(&path).unwrap();
+        let loaded = Config::load(&path);
+        assert_eq!(
+            loaded.accounts[0].usage_limits.session_tokens,
+            Some(5_000_000)
+        );
+        assert_eq!(
+            loaded.accounts[0].usage_limits.weekly_tokens,
+            Some(40_000_000)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_default_usage_limits_when_field_absent_in_json() {
+        // Legacy account without the field must still load with defaults.
+        let dir = std::env::temp_dir().join("cm_cfg_legacy_no_usage_limits");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"terminal":"terminal","accounts":[{"id":"a","label":"A","config_dir":"~/.claude-a"}],"projects":[]}"#,
+        )
+        .unwrap();
+        let loaded = Config::load(&path);
+        assert_eq!(loaded.accounts[0].usage_limits, UsageLimits::default());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
