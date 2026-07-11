@@ -46,6 +46,9 @@ Goal: make each account's session inherit the user-level resources from
 - A global on/off toggle for inheritance (YAGNI; revisit if requested).
 - Syncing anything beyond the five listed subdirs (e.g. `settings.json`,
   `CLAUDE.md`) — explicitly out of scope.
+  > **Superseded (2026-07-11):** `settings.json` is now seeded (one-shot copy,
+  > not synced) into fresh account dirs — see
+  > `docs/specs/2026-07-11/spec-seed-settings-json.md`.
 
 ## Acceptance criteria
 
