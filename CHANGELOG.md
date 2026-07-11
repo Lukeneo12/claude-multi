@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`settings.json` seeded into fresh accounts**: launching a session (or
+  logging in) for an account whose config dir has no `settings.json` now copies
+  `~/.claude/settings.json` into it, so user-level settings like `statusLine`
+  carry over automatically. The seed is **one-shot**: it is a real file copy
+  (never a symlink), an existing per-account `settings.json` is never
+  overwritten or merged, and later edits to `~/.claude/settings.json` do not
+  propagate. See `docs/specs/2026-07-11/spec-seed-settings-json.md`.
+
 ## [0.4.0] — 2026-07-06
 
 ### Added

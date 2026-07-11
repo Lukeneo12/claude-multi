@@ -155,6 +155,11 @@ The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI se
 - [ ] **Plugins NOT inherited:** Confirm the account dir does **not** get a
       `plugins/` symlink dir (plugins are intentionally excluded — enablement is
       per-account in `.claude.json`; a shared `plugins/` would show disabled).
+- [ ] **`settings.json` seeded once:** With a `statusLine` configured in
+      `~/.claude/settings.json`, launch a session for an account whose dir lacks
+      `settings.json` → the account dir gains a **real file copy** (not a
+      symlink) and the statusline appears in the session. Edit the account's
+      copy and relaunch → it is **not** overwritten (one-shot seed).
 
 ---
 

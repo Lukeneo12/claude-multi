@@ -63,9 +63,8 @@ automatically, once, and then owns its copy.
       launch succeeds (silent no-op).
 - [ ] AC4: Nothing is ever written under `~/.claude` (read-only source).
 - [ ] AC5: An I/O failure while copying does not abort the launch; the session
-      still starts (settings seeding is best-effort, consistent with
-      inheritance being a convenience layer). <!-- TODO: confirm — alternative
-      is failing the launch loudly like ensure_inherited does today -->
+      still starts and the error is logged to stderr (settings seeding is
+      best-effort — confirmed with the user on 2026-07-11).
 - [ ] AC6: `cargo test` covers the pure seed-decision logic
       (`test_should_X_when_Y` naming) and `cargo clippy --all-targets -- -D warnings`
       stays clean.
@@ -132,8 +131,9 @@ menu-id changes. Already-seeded accounts keep their `settings.json` — harmless
 and removable by deleting `~/.claude-<suffix>/settings.json` manually.
 
 ## 6. Open questions
-- [ ] AC5: should a copy failure be best-effort (log-and-continue) or fail the
-      launch like `ensure_inherited` errors do today? Proposal: best-effort.
+- [x] AC5: should a copy failure be best-effort (log-and-continue) or fail the
+      launch like `ensure_inherited` errors do today? → **Resolved: best-effort**
+      (log to stderr, launch proceeds).
 
 ---
 

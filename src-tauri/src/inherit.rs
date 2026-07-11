@@ -14,6 +14,12 @@ use std::path::Path;
 /// sync. See the spec's Risks section.
 pub const INHERITED_SUBDIRS: &[&str] = &["agents", "commands", "skills", "output-styles"];
 
+/// Root-level files of `~/.claude` seeded into an account's config dir when
+/// absent there. Unlike `INHERITED_SUBDIRS` these are one-shot real copies,
+/// never symlinks: Claude Code writes to them, and a link would write through
+/// into `~/.claude`. An existing dest file always wins (no overwrite, no merge).
+pub const SEEDED_FILES: &[&str] = &["settings.json"];
+
 /// One entry observed in an account's subdir during planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestEntry {
@@ -120,6 +126,46 @@ pub fn resolve_subdir(
             }
         }
     }
+}
+
+/// Names to seed: every source file whose name is absent from the dest.
+/// Sorted ascending for deterministic behavior and tests.
+pub fn plan_file_seeds(source_files: &[String], dest_files: &[String]) -> Vec<String> {
+    let existing: HashSet<&str> = dest_files.iter().map(String::as_str).collect();
+    let mut out: Vec<String> = source_files
+        .iter()
+        .filter(|n| !existing.contains(n.as_str()))
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// Copy each seedable root-level file (`SEEDED_FILES`) from `source` into
+/// `config_dir` when the account doesn't have it yet. One-shot: any existing
+/// dest entry (file, dir, or even a dangling symlink) wins and is left
+/// untouched, so accounts diverge freely after the first seed. Never writes
+/// inside `source`.
+pub fn ensure_seeded(source: &Path, config_dir: &Path) -> std::io::Result<()> {
+    let source_files: Vec<String> = SEEDED_FILES
+        .iter()
+        .filter(|f| source.join(f).is_file())
+        .map(|f| (*f).to_string())
+        .collect();
+    let dest_files: Vec<String> = SEEDED_FILES
+        .iter()
+        .filter(|f| std::fs::symlink_metadata(config_dir.join(f)).is_ok())
+        .map(|f| (*f).to_string())
+        .collect();
+    let plan = plan_file_seeds(&source_files, &dest_files);
+    if plan.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(config_dir)?;
+    for name in plan {
+        std::fs::copy(source.join(&name), config_dir.join(&name))?;
+    }
+    Ok(())
 }
 
 /// Result of an inherit pass for one account.
@@ -394,6 +440,31 @@ mod core_tests {
             InheritStatus::Skipped
         );
     }
+
+    #[test]
+    fn test_should_plan_seed_when_source_has_file_and_dest_lacks_it() {
+        let src = vec!["settings.json".to_string()];
+        assert_eq!(plan_file_seeds(&src, &[]), vec!["settings.json"]);
+    }
+
+    #[test]
+    fn test_should_not_plan_seed_when_dest_already_has_file() {
+        let src = vec!["settings.json".to_string()];
+        let dst = vec!["settings.json".to_string()];
+        assert!(plan_file_seeds(&src, &dst).is_empty());
+    }
+
+    #[test]
+    fn test_should_not_plan_seed_when_source_lacks_file() {
+        assert!(plan_file_seeds(&[], &[]).is_empty());
+        assert!(plan_file_seeds(&[], &["settings.json".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn test_should_plan_seeds_sorted_when_multiple_files() {
+        let src = vec!["b.json".to_string(), "a.json".to_string()];
+        assert_eq!(plan_file_seeds(&src, &[]), vec!["a.json", "b.json"]);
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -589,6 +660,85 @@ mod io_tests {
         .unwrap();
         let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
         assert!(out.needs_prompt.is_empty()); // symlink is not account-owned
+    }
+
+    #[test]
+    fn test_should_copy_settings_when_dest_lacks_it() {
+        let (source, cfg) = fixture("seed_basic");
+        std::fs::write(source.join("settings.json"), b"{\"statusLine\":{}}").unwrap();
+
+        ensure_seeded(&source, &cfg).unwrap();
+
+        let seeded = cfg.join("settings.json");
+        let meta = std::fs::symlink_metadata(&seeded).unwrap();
+        assert!(
+            meta.file_type().is_file(),
+            "must be a real file, not a symlink"
+        );
+        assert_eq!(
+            std::fs::read(&seeded).unwrap(),
+            std::fs::read(source.join("settings.json")).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_should_not_overwrite_existing_settings_when_seeding() {
+        let (source, cfg) = fixture("seed_existing");
+        std::fs::write(source.join("settings.json"), b"{\"from\":\"source\"}").unwrap();
+        std::fs::write(cfg.join("settings.json"), b"{\"from\":\"account\"}").unwrap();
+
+        ensure_seeded(&source, &cfg).unwrap();
+
+        assert_eq!(
+            std::fs::read(cfg.join("settings.json")).unwrap(),
+            b"{\"from\":\"account\"}"
+        );
+    }
+
+    #[test]
+    fn test_should_noop_when_source_has_no_settings() {
+        let (source, cfg) = fixture("seed_no_source");
+        ensure_seeded(&source, &cfg).unwrap();
+        assert!(!cfg.join("settings.json").exists());
+    }
+
+    #[test]
+    fn test_should_create_config_dir_when_seeding_into_absent_dir() {
+        let (source, cfg) = fixture("seed_mkdir");
+        std::fs::write(source.join("settings.json"), b"{}").unwrap();
+        std::fs::remove_dir_all(&cfg).unwrap();
+
+        ensure_seeded(&source, &cfg).unwrap();
+
+        assert!(cfg.join("settings.json").is_file());
+    }
+
+    #[test]
+    fn test_should_not_write_source_when_seeding() {
+        let (source, cfg) = fixture("seed_nowrite");
+        std::fs::write(source.join("settings.json"), b"{}").unwrap();
+        let before = snapshot(&source);
+
+        ensure_seeded(&source, &cfg).unwrap();
+
+        assert_eq!(snapshot(&source), before, "source dir must be untouched");
+    }
+
+    #[test]
+    fn test_should_be_idempotent_when_seeding_twice() {
+        let (source, cfg) = fixture("seed_idempotent");
+        std::fs::write(source.join("settings.json"), b"{\"v\":1}").unwrap();
+        ensure_seeded(&source, &cfg).unwrap();
+
+        // Account diverges, then the source changes: neither must leak across.
+        std::fs::write(cfg.join("settings.json"), b"{\"v\":\"mine\"}").unwrap();
+        std::fs::write(source.join("settings.json"), b"{\"v\":2}").unwrap();
+        ensure_seeded(&source, &cfg).unwrap();
+
+        assert_eq!(
+            std::fs::read(cfg.join("settings.json")).unwrap(),
+            b"{\"v\":\"mine\"}"
+        );
     }
 
     #[test]
