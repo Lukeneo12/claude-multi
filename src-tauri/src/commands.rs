@@ -381,10 +381,8 @@ mod validate_project_dir_tests {
 
     #[test]
     fn test_should_accept_project_when_dir_exists() {
-        let dir = std::env::temp_dir().join("cm_validate_existing");
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(validate_project_dir("app", &dir).is_ok());
-        std::fs::remove_dir_all(&dir).ok();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_project_dir("app", dir.path()).is_ok());
     }
 
     #[test]

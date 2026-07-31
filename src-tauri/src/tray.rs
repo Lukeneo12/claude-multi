@@ -39,6 +39,20 @@ pub fn parse_menu_id(id: &str) -> MenuAction {
     }
 }
 
+/// The auth actions shared by the logged-in and expired account branches.
+fn account_auth_items(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> tauri::Result<(
+    tauri::menu::MenuItem<tauri::Wry>,
+    tauri::menu::MenuItem<tauri::Wry>,
+)> {
+    let relogin =
+        MenuItemBuilder::with_id(format!("relogin::{account_id}"), "Re-login…").build(app)?;
+    let logout = MenuItemBuilder::with_id(format!("logout::{account_id}"), "Log out").build(app)?;
+    Ok((relogin, logout))
+}
+
 fn build_menu(
     app: &tauri::AppHandle,
     cfg: &Config,
@@ -101,10 +115,8 @@ fn build_menu(
                     .enabled(false)
                     .build(app)?,
                 );
-                let relogin_id = format!("relogin::{}", account.id);
-                sub = sub.item(&MenuItemBuilder::with_id(relogin_id, "Re-login…").build(app)?);
-                let logout_id = format!("logout::{}", account.id);
-                sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
+                let (relogin, logout) = account_auth_items(app, &account.id)?;
+                sub = sub.item(&relogin).item(&logout);
             }
             session::SessionStatus::Expired { email } => {
                 // Session expired: no launchable items — opening a project with
@@ -116,10 +128,8 @@ fn build_menu(
                         .enabled(false)
                         .build(app)?,
                 );
-                let relogin_id = format!("relogin::{}", account.id);
-                sub = sub.item(&MenuItemBuilder::with_id(relogin_id, "Re-login…").build(app)?);
-                let logout_id = format!("logout::{}", account.id);
-                sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
+                let (relogin, logout) = account_auth_items(app, &account.id)?;
+                sub = sub.item(&relogin).item(&logout);
             }
             session::SessionStatus::LoggedOut => {
                 // Not logged in: only a login action — sessions and projects need

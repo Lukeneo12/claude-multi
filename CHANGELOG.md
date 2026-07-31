@@ -17,7 +17,10 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   may show a one-time Keychain permission prompt — choose "Always Allow").
   Detection is conservative: only positive evidence of expiry blocks the
   account; unreadable credentials keep today's behavior. `launch_session` /
-  `open_session` also refuse expired accounts as a backstop.
+  `open_session` also refuse expired accounts as a backstop. Verdicts are
+  cached for 30s per account so the tray's hover-rebuild doesn't re-read
+  credentials (or re-show a denied Keychain prompt) on every open — a fresh
+  re-login may take up to 30s to reflect in the menu.
 
 ### Fixed
 

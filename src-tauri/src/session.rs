@@ -15,7 +15,10 @@
 use crate::config::Account;
 use crate::paths::expand_tilde;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionStatus {
@@ -109,6 +112,37 @@ fn read_keychain_credentials(_config_dir: &Path) -> Option<String> {
     None
 }
 
+/// How long a credential verdict is reused before re-reading its source.
+/// Expiries move on a scale of days, while the tray rebuilds on every hover —
+/// the cache keeps that rebuild from shelling out to `security` (and from
+/// re-showing a denied Keychain prompt) on each open. It also amortizes the
+/// double read per launch (menu render + launch gate).
+const VERDICT_TTL: Duration = Duration::from_secs(30);
+
+fn verdict_cache() -> &'static Mutex<HashMap<PathBuf, (Instant, CredentialVerdict)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, CredentialVerdict)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cached wrapper around the credential read + evaluation for one config dir.
+fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
+    if let Ok(cache) = verdict_cache().lock() {
+        if let Some((read_at, verdict)) = cache.get(config_dir) {
+            if read_at.elapsed() < VERDICT_TTL {
+                return *verdict;
+            }
+        }
+    }
+    let verdict = match read_credentials(config_dir) {
+        Some(json) => evaluate_credentials(&json, chrono::Utc::now().timestamp_millis()),
+        None => CredentialVerdict::Unknown,
+    };
+    if let Ok(mut cache) = verdict_cache().lock() {
+        cache.insert(config_dir.to_path_buf(), (Instant::now(), verdict));
+    }
+    verdict
+}
+
 /// Full status for one account, combining the recorded email with the token
 /// verdict. Never blocks a user out on missing evidence (see module docs).
 pub fn account_session_status(account: &Account) -> SessionStatus {
@@ -116,11 +150,7 @@ pub fn account_session_status(account: &Account) -> SessionStatus {
         return SessionStatus::LoggedOut;
     };
     let config_dir = expand_tilde(&account.config_dir);
-    let verdict = match read_credentials(&config_dir) {
-        Some(json) => evaluate_credentials(&json, chrono::Utc::now().timestamp_millis()),
-        None => CredentialVerdict::Unknown,
-    };
-    match verdict {
+    match cached_verdict(&config_dir) {
         CredentialVerdict::Expired => SessionStatus::Expired { email },
         CredentialVerdict::Valid | CredentialVerdict::Unknown => SessionStatus::LoggedIn { email },
     }
@@ -158,10 +188,11 @@ mod tests {
 
     #[test]
     fn test_should_derive_keychain_service_from_config_dir_hash() {
-        // Vector verified against a real Claude Code Keychain entry.
+        // Locks the algorithm (first 8 hex chars of sha256 over the raw path),
+        // which was verified once against real Claude Code Keychain entries.
         assert_eq!(
-            keychain_service("/Users/lucasgabrieldonadio/.claude-personal"),
-            "Claude Code-credentials-2d4d83e2"
+            keychain_service("/Users/jdoe/.claude-personal"),
+            "Claude Code-credentials-2b0fd335"
         );
     }
 
@@ -214,28 +245,31 @@ mod tests {
         assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
     }
 
+    /// Unique-per-run account dir (RAII cleanup even on assert panic), seeded
+    /// as logged-in with the given email.
+    fn logged_in_dir(email: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".claude.json"),
+            format!(r#"{{"oauthAccount":{{"emailAddress":"{email}"}}}}"#),
+        )
+        .unwrap();
+        dir
+    }
+
+    const EXPIRED_CREDS: &str = r#"{"claudeAiOauth":{"refreshTokenExpiresAt":1}}"#;
+
     #[test]
     fn test_should_report_expired_when_credentials_file_past_refresh_expiry() {
-        let dir = std::env::temp_dir().join("cm_session_expired");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(".claude.json"),
-            r#"{"oauthAccount":{"emailAddress":"a@b.c"}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join(".credentials.json"),
-            r#"{"claudeAiOauth":{"refreshTokenExpiresAt":1}}"#,
-        )
-        .unwrap();
-        let status = account_session_status(&account_with_dir(&dir));
+        let dir = logged_in_dir("a@b.c");
+        std::fs::write(dir.path().join(".credentials.json"), EXPIRED_CREDS).unwrap();
+        let status = account_session_status(&account_with_dir(dir.path()));
         assert_eq!(
             status,
             SessionStatus::Expired {
                 email: "a@b.c".into()
             }
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -249,14 +283,8 @@ mod tests {
     #[test]
     fn test_should_stay_logged_in_when_credentials_unreadable() {
         // Email present but no credentials source at all → conservative LoggedIn.
-        let dir = std::env::temp_dir().join("cm_session_no_creds");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(".claude.json"),
-            r#"{"oauthAccount":{"emailAddress":"a@b.c"}}"#,
-        )
-        .unwrap();
-        let status = account_session_status(&account_with_dir(&dir));
+        let dir = logged_in_dir("a@b.c");
+        let status = account_session_status(&account_with_dir(dir.path()));
         // On macOS this may consult the Keychain for a temp-dir service that
         // can't exist, which cleanly reports "not found" → Unknown → LoggedIn.
         assert_eq!(
@@ -265,26 +293,42 @@ mod tests {
                 email: "a@b.c".into()
             }
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn test_should_refuse_launch_when_session_expired() {
-        let dir = std::env::temp_dir().join("cm_session_gate");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(".claude.json"),
-            r#"{"oauthAccount":{"emailAddress":"a@b.c"}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join(".credentials.json"),
-            r#"{"claudeAiOauth":{"refreshTokenExpiresAt":1}}"#,
-        )
-        .unwrap();
-        let err = ensure_session_usable(&account_with_dir(&dir)).unwrap_err();
+        let dir = logged_in_dir("a@b.c");
+        std::fs::write(dir.path().join(".credentials.json"), EXPIRED_CREDS).unwrap();
+        let err = ensure_session_usable(&account_with_dir(dir.path())).unwrap_err();
         assert!(err.contains("expired"));
         assert!(err.contains("Re-login"));
-        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_reuse_cached_verdict_when_credentials_change_within_ttl() {
+        // The verdict is cached per config dir for VERDICT_TTL, so the tray's
+        // hover-rebuild doesn't re-read credentials (or re-shell to `security`)
+        // on every open. Freshly written valid credentials therefore aren't
+        // seen until the TTL lapses — an accepted staleness of seconds against
+        // expiries measured in days.
+        let dir = logged_in_dir("a@b.c");
+        std::fs::write(dir.path().join(".credentials.json"), EXPIRED_CREDS).unwrap();
+        let account = account_with_dir(dir.path());
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::Expired { .. }
+        ));
+
+        // Far-future expiry (year 2100) so the test can only pass via the
+        // cache — a fresh read would evaluate these credentials as Valid.
+        let valid = r#"{"claudeAiOauth":{"refreshTokenExpiresAt":4102444800000}}"#;
+        std::fs::write(dir.path().join(".credentials.json"), valid).unwrap();
+        assert!(
+            matches!(
+                account_session_status(&account),
+                SessionStatus::Expired { .. }
+            ),
+            "verdict must come from the cache within the TTL"
+        );
     }
 }
