@@ -34,7 +34,7 @@ fn adapter(
 
 pub fn builtin_adapters() -> Vec<TerminalAdapter> {
     // `open -a <App> <script>` on macOS opens the app AND runs the script file.
-    // Warp is the known spike (see spec Risks): verify it actually runs the script.
+    // Verified for Terminal, iTerm2 and Warp.
     let mut v = vec![];
     #[cfg(target_os = "macos")]
     {
@@ -54,7 +54,7 @@ pub fn builtin_adapters() -> Vec<TerminalAdapter> {
         ));
         v.push(adapter(
             "warp",
-            "Warp (verify)",
+            "Warp",
             "open",
             &["-a", "Warp", "{{script}}"],
             ScriptKind::Posix,

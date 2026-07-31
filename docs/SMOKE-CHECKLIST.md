@@ -127,19 +127,33 @@ See "Warp Adapter Decision" below.
 
 ## Warp Adapter Decision (macOS)
 
-**Status: Unverified — requires an interactive GUI session.**
+**Status: Verified — PASS (2026-07-31, daily-driven).**
 
 Warp is installed at `/Applications/Warp.app`. The adapter command is
-`open -a Warp {{script}}`. Whether Warp executes the script (vs. opening it as text)
-is application-specific and can't be confirmed headlessly.
+`open -a Warp {{script}}`; Warp executes the script in a new tab. The label is
+now plain **"Warp"**.
 
-**Verify**: set Terminal to "Warp (verify)", launch a project.
-- **PASS**: Warp opens and `claude` starts in the right project dir with
-  `CLAUDE_CONFIG_DIR` set.
-- **FAIL**: Warp opens but doesn't run the script → use Terminal.app/iTerm2. Native Warp
-  support (Launch Configurations / `warp://`) is a follow-up.
+Note: the historical "Couldn't open terminal 'warp'" failure was **not** a Warp
+problem — the spawn's `current_dir` pointed at a project directory that no
+longer existed. That case is now caught before spawning and reported as a
+missing project path (see step 15).
 
-The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI session.
+### 15. Missing project path
+- Point a project at a directory that doesn't exist and launch it.
+- Expect an error naming the **project and its path** (not the terminal), with
+  no terminal window opened and nothing copied to the clipboard.
+
+### 16. Expired session (all OSes)
+- With an account whose stored `refreshTokenExpiresAt` is in the past, open the
+  tray menu: the account shows `⚠ <email> — session expired` and only
+  `Re-login…` / `Log out` — no "New session", no projects, no usage lines.
+- Credential source per OS: `<config_dir>/.credentials.json` on Linux/Windows
+  (and older CLIs on macOS); the login Keychain on macOS. On Linux, remember the
+  menu refreshes on save, not hover.
+- macOS only: the first read may show a Keychain prompt for `security` — choose
+  **Always Allow**; choosing Deny keeps the account rendered as logged in
+  (conservative fallback).
+- `Re-login…` then restores the normal menu after authenticating.
 
 ---
 
@@ -216,6 +230,8 @@ The label stays **"Warp (verify)"** until a human confirms pass/fail on a GUI se
 
 ## Known caveats
 
-- **Warp adapter**: unverified (above).
 - **Linux hover-refresh**: not available (no tray hover events); save-refresh works.
+- **Expired-session detection**: relies on locally stored token expiries; a
+  server-side revocation before `refreshTokenExpiresAt` can't be detected
+  offline, so such an account still renders as logged in until launch fails.
 - **Distribution**: v1 runs from a local build; no code signing / notarization / installers yet.

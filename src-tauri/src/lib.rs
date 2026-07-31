@@ -4,6 +4,7 @@ mod config;
 mod inherit;
 mod launcher;
 mod paths;
+mod session;
 mod tray;
 mod usage;
 

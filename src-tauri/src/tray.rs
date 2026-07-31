@@ -1,4 +1,4 @@
-use crate::{commands, config::Config, paths, usage};
+use crate::{commands, config::Config, paths, session, usage};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri_plugin_dialog::DialogExt;
 
@@ -53,8 +53,8 @@ fn build_menu(
 
     for account in &cfg.accounts {
         let mut sub = SubmenuBuilder::new(app, &account.label);
-        match account.logged_in_email() {
-            Some(email) => {
+        match session::account_session_status(account) {
+            session::SessionStatus::LoggedIn { email } => {
                 // Logged in: a project-less session, this account's projects, then
                 // the email status and the re-login / log out actions.
                 sub = sub.item(
@@ -106,7 +106,22 @@ fn build_menu(
                 let logout_id = format!("logout::{}", account.id);
                 sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
             }
-            None => {
+            session::SessionStatus::Expired { email } => {
+                // Session expired: no launchable items — opening a project with
+                // dead credentials just drops the user into a login prompt.
+                // Surface the state and offer the two ways out.
+                let status_id = format!("status::{}", account.id);
+                sub = sub.item(
+                    &MenuItemBuilder::with_id(status_id, format!("⚠ {email} — session expired"))
+                        .enabled(false)
+                        .build(app)?,
+                );
+                let relogin_id = format!("relogin::{}", account.id);
+                sub = sub.item(&MenuItemBuilder::with_id(relogin_id, "Re-login…").build(app)?);
+                let logout_id = format!("logout::{}", account.id);
+                sub = sub.item(&MenuItemBuilder::with_id(logout_id, "Log out").build(app)?);
+            }
+            session::SessionStatus::LoggedOut => {
                 // Not logged in: only a login action — sessions and projects need
                 // an authenticated account first.
                 let login_id = format!("login::{}", account.id);
