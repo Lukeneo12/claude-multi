@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Expired sessions detected in the tray**: an account whose OAuth refresh
+  token has expired now shows `⚠ <email> — session expired` with only
+  `Re-login…` / `Log out` available, instead of impersonating a logged-in
+  account and letting projects open against dead credentials. Expiry is read
+  from `<config_dir>/.credentials.json` or, on macOS, from the login Keychain
+  entry `Claude Code-credentials-<sha256(config_dir)[0..8]>` (the first read
+  may show a one-time Keychain permission prompt — choose "Always Allow").
+  Detection is conservative: only positive evidence of expiry blocks the
+  account; unreadable credentials keep today's behavior. `launch_session` /
+  `open_session` also refuse expired accounts as a backstop. Verdicts are
+  cached for 30s per account so the tray's hover-rebuild doesn't re-read
+  credentials (or re-show a denied Keychain prompt) on every open — a fresh
+  re-login may take up to 30s to reflect in the menu.
+
+### Fixed
+
+- **Misleading "Couldn't open terminal" error**: launching a project whose
+  directory no longer exists failed while blaming the configured terminal
+  (e.g. `Couldn't open terminal 'warp'`) — the spawn's working directory was
+  the missing project path. The path is now validated first with a precise
+  error naming the project and path, and terminal-spawn failures include the
+  underlying OS error. The Warp adapter label also drops its `(verify)`
+  suffix — `open -a Warp <script>` is confirmed working.
+
 ## [0.5.0] — 2026-07-11
 
 ### Added

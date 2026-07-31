@@ -1,6 +1,6 @@
 use crate::config::{Config, InheritDecision};
 use crate::paths::expand_tilde;
-use crate::{adapters, inherit, launcher, paths};
+use crate::{adapters, inherit, launcher, paths, session};
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -74,6 +74,21 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Checks that a project's directory still exists before any launch work.
+/// `spawn` runs the terminal with `current_dir` set to it, so a missing dir
+/// makes the OS spawn fail — which used to be misreported as a terminal
+/// problem ("Couldn't open terminal …") when the terminal was fine.
+fn validate_project_dir(label: &str, path: &std::path::Path) -> Result<(), String> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Project '{label}' points to '{}', which doesn't exist. Fix its path in Preferences.",
+            path.display()
+        ))
+    }
+}
+
 /// Builds the paste-able fallback command: `CLAUDE_CONFIG_DIR='…' sh -c "<inner>"`.
 fn manual_sh(config_dir: &str, inner: &str) -> String {
     format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"{inner}\"")
@@ -138,20 +153,23 @@ pub fn launch_session(
     let project = cfg.project(&project_id).ok_or("unknown project")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
 
+    let project_path = expand_tilde(&project.path);
+    validate_project_dir(&project.label, &project_path)?;
+    session::ensure_session_usable(account)?;
+
     ensure_account_inherits(&app, &account_id)?;
 
     let config_dir = expand_tilde(&account.config_dir);
-    let project_path = expand_tilde(&project.path);
     let cd = config_dir.to_string_lossy();
     let pp = project_path.to_string_lossy();
 
     let script = launcher::build_script(adapter.kind, &cd, &pp);
     let script_path = launcher::write_script(&script, adapter.kind).map_err(|e| e.to_string())?;
 
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|_e| {
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|e| {
         let _ = app.clipboard().write_text(manual_command(&cd, &pp));
         format!(
-            "Couldn't open terminal '{}'. The launch command was copied to your clipboard — paste it into any terminal.",
+            "Couldn't open terminal '{}' ({e}). The launch command was copied to your clipboard — paste it into any terminal.",
             adapter.id
         )
     })
@@ -176,6 +194,12 @@ fn run_account_action(
     let cfg = Config::load(&paths::config_file_path(app));
     let account = cfg.account(account_id).ok_or("unknown account")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
+
+    // A plain session needs live credentials; login/re-login/logout are exactly
+    // how an expired account gets fixed, so they must stay available.
+    if matches!(action, AccountAction::Session) {
+        session::ensure_session_usable(account)?;
+    }
 
     let config_dir = expand_tilde(&account.config_dir);
     let cd = config_dir.to_string_lossy();
@@ -214,10 +238,10 @@ fn run_account_action(
     };
 
     let script_path = launcher::write_script(&script, adapter.kind).map_err(|e| e.to_string())?;
-    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|_e| {
+    adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|e| {
         let _ = app.clipboard().write_text(fallback);
         format!(
-            "Couldn't open terminal '{}' for {what}. The command was copied to your clipboard — paste it into any terminal.",
+            "Couldn't open terminal '{}' for {what} ({e}). The command was copied to your clipboard — paste it into any terminal.",
             adapter.id
         )
     })
@@ -348,6 +372,26 @@ mod tests {
         cfg.save(&path).unwrap();
         assert_eq!(Config::load(&path).terminal, "iterm");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod validate_project_dir_tests {
+    use super::validate_project_dir;
+
+    #[test]
+    fn test_should_accept_project_when_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_project_dir("app", dir.path()).is_ok());
+    }
+
+    #[test]
+    fn test_should_name_project_and_path_when_dir_missing() {
+        let missing = std::path::Path::new("/nonexistent/cm-project");
+        let err = validate_project_dir("cozify-backend", missing).unwrap_err();
+        assert!(err.contains("cozify-backend"));
+        assert!(err.contains("/nonexistent/cm-project"));
+        assert!(!err.contains("terminal"), "must not blame the terminal");
     }
 }
 
