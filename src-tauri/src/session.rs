@@ -120,18 +120,14 @@ fn read_credentials(config_dir: &Path) -> CredentialSource {
     }
 }
 
-/// Classifies a failed `security find-generic-password` run. The CLI signals a
-/// missing item with exit status 44 and the message "The specified item could
-/// not be found"; anything else (denied prompt, interaction not allowed, …)
-/// means the item may exist but we couldn't read it. Pure so it's testable on
-/// every OS; matching both signals keeps it robust to either one changing.
+/// True when a failed `security find-generic-password` run means the item does
+/// not exist (exit status 44 / "The specified item could not be found"), as
+/// opposed to existing but being unreadable (denied prompt, interaction not
+/// allowed, …). Pure so it's testable on every OS; matching both signals keeps
+/// it robust to either one changing.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn classify_security_failure(exit_code: Option<i32>, stderr: &str) -> CredentialVerdict {
-    if exit_code == Some(44) || stderr.contains("could not be found") {
-        CredentialVerdict::Absent
-    } else {
-        CredentialVerdict::Unknown
-    }
+pub fn security_item_not_found(exit_code: Option<i32>, stderr: &str) -> bool {
+    exit_code == Some(44) || stderr.contains("could not be found")
 }
 
 #[cfg(target_os = "macos")]
@@ -150,9 +146,10 @@ fn read_keychain_credentials(config_dir: &Path) -> CredentialSource {
         };
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    match classify_security_failure(output.status.code(), &stderr) {
-        CredentialVerdict::Absent => CredentialSource::Absent,
-        _ => CredentialSource::Unreadable,
+    if security_item_not_found(output.status.code(), &stderr) {
+        CredentialSource::Absent
+    } else {
+        CredentialSource::Unreadable
     }
 }
 
@@ -174,24 +171,51 @@ fn verdict_cache() -> &'static Mutex<HashMap<PathBuf, (Instant, CredentialVerdic
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Drops the cached verdict for one config dir. Called when a tray action is
-/// about to change the credentials (login / logout / re-login) so the next menu
-/// build re-reads them instead of serving a verdict from before the action.
+/// After a tray auth action (login / logout / re-login) the credentials change
+/// *later*, once the user finishes in the terminal — so for this long the dir
+/// is read fresh on every menu build instead of re-caching the pre-action
+/// state on the first hover. Reads without a prompt are cheap; the window only
+/// affects the one account being acted on.
+const AUTH_GRACE: Duration = Duration::from_secs(120);
+
+fn no_cache_until() -> &'static Mutex<HashMap<PathBuf, Instant>> {
+    static GRACE: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+    GRACE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn in_grace(config_dir: &Path) -> bool {
+    no_cache_until()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(config_dir).copied())
+        .is_some_and(|until| Instant::now() < until)
+}
+
+/// Drops the cached verdict for one config dir and opens an [`AUTH_GRACE`]
+/// window during which it is not cached again. Called when a tray action is
+/// about to change the credentials, so the menu tracks the terminal's outcome
+/// as it happens rather than serving a stale verdict for the rest of the TTL.
 pub fn invalidate_verdict(config_dir: &Path) {
     if let Ok(mut cache) = verdict_cache().lock() {
         cache.remove(config_dir);
+    }
+    if let Ok(mut grace) = no_cache_until().lock() {
+        grace.insert(config_dir.to_path_buf(), Instant::now() + AUTH_GRACE);
     }
 }
 
 /// Cached wrapper around the credential read + evaluation for one config dir.
 /// `Absent` is never cached: a missing item returns instantly and never
 /// prompts, and not caching it means a fresh login shows up on the next hover
-/// instead of after the TTL.
+/// instead of after the TTL. Nothing is cached inside an auth grace window.
 fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
-    if let Ok(cache) = verdict_cache().lock() {
-        if let Some((read_at, verdict)) = cache.get(config_dir) {
-            if read_at.elapsed() < VERDICT_TTL {
-                return *verdict;
+    let in_grace = in_grace(config_dir);
+    if !in_grace {
+        if let Ok(cache) = verdict_cache().lock() {
+            if let Some((read_at, verdict)) = cache.get(config_dir) {
+                if read_at.elapsed() < VERDICT_TTL {
+                    return *verdict;
+                }
             }
         }
     }
@@ -200,19 +224,18 @@ fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
             evaluate_credentials(&json, chrono::Utc::now().timestamp_millis())
         }
         CredentialSource::Unreadable => CredentialVerdict::Unknown,
-        CredentialSource::Absent => return CredentialVerdict::Absent,
+        CredentialSource::Absent => CredentialVerdict::Absent,
     };
-    if let Ok(mut cache) = verdict_cache().lock() {
-        cache.insert(config_dir.to_path_buf(), (Instant::now(), verdict));
+    if !in_grace && verdict != CredentialVerdict::Absent {
+        if let Ok(mut cache) = verdict_cache().lock() {
+            cache.insert(config_dir.to_path_buf(), (Instant::now(), verdict));
+        }
     }
     verdict
 }
 
 /// Pure mapping from the recorded email + credential verdict to a status.
-pub fn status_from(email: Option<String>, verdict: CredentialVerdict) -> SessionStatus {
-    let Some(email) = email else {
-        return SessionStatus::LoggedOut { last_email: None };
-    };
+pub fn status_from(email: String, verdict: CredentialVerdict) -> SessionStatus {
     match verdict {
         CredentialVerdict::Absent => SessionStatus::LoggedOut {
             last_email: Some(email),
@@ -226,12 +249,10 @@ pub fn status_from(email: Option<String>, verdict: CredentialVerdict) -> Session
 /// verdict. Never locks a user out on *unreadable* evidence (see module docs);
 /// only positively absent credentials read as logged out.
 pub fn account_session_status(account: &Account) -> SessionStatus {
-    let email = account.logged_in_email();
-    if email.is_none() {
+    let Some(email) = account.logged_in_email() else {
         return SessionStatus::LoggedOut { last_email: None }; // nothing to read
-    }
-    let config_dir = expand_tilde(&account.config_dir);
-    status_from(email, cached_verdict(&config_dir))
+    };
+    status_from(email, cached_verdict(&expand_tilde(&account.config_dir)))
 }
 
 /// Launch-time gate: sessions and project launches refuse a logged-out or
@@ -407,82 +428,52 @@ mod tests {
     }
 
     #[test]
-    fn test_should_classify_security_not_found_as_absent() {
-        assert_eq!(
-            classify_security_failure(
-                Some(44),
-                "security: SecKeychainSearchCopyNext: The specified item could not be found.\n"
-            ),
-            CredentialVerdict::Absent
-        );
+    fn test_should_detect_security_item_not_found_from_exit_code_or_message() {
+        assert!(security_item_not_found(
+            Some(44),
+            "security: SecKeychainSearchCopyNext: The specified item could not be found.\n"
+        ));
         // Either signal alone is enough.
-        assert_eq!(
-            classify_security_failure(Some(44), ""),
-            CredentialVerdict::Absent
-        );
-        assert_eq!(
-            classify_security_failure(Some(1), "The specified item could not be found."),
-            CredentialVerdict::Absent
-        );
+        assert!(security_item_not_found(Some(44), ""));
+        assert!(security_item_not_found(
+            Some(1),
+            "The specified item could not be found."
+        ));
     }
 
     #[test]
-    fn test_should_classify_other_security_failures_as_unknown() {
-        assert_eq!(
-            classify_security_failure(
-                Some(128),
-                "security: SecKeychainItemCopyContent: User canceled."
-            ),
-            CredentialVerdict::Unknown
-        );
-        assert_eq!(
-            classify_security_failure(Some(36), "User interaction is not allowed."),
-            CredentialVerdict::Unknown
-        );
-        assert_eq!(
-            classify_security_failure(None, ""),
-            CredentialVerdict::Unknown
-        );
+    fn test_should_not_treat_other_security_failures_as_not_found() {
+        assert!(!security_item_not_found(
+            Some(128),
+            "security: SecKeychainItemCopyContent: User canceled."
+        ));
+        assert!(!security_item_not_found(
+            Some(36),
+            "User interaction is not allowed."
+        ));
+        assert!(!security_item_not_found(None, ""));
     }
 
     #[test]
     fn test_should_map_verdicts_to_status_when_email_recorded() {
-        let email = || Some("a@b.c".to_string());
+        let email = || "a@b.c".to_string();
         assert_eq!(
             status_from(email(), CredentialVerdict::Valid),
-            SessionStatus::LoggedIn {
-                email: "a@b.c".into()
-            }
+            SessionStatus::LoggedIn { email: email() }
         );
         assert_eq!(
             status_from(email(), CredentialVerdict::Unknown),
-            SessionStatus::LoggedIn {
-                email: "a@b.c".into()
-            }
+            SessionStatus::LoggedIn { email: email() }
         );
         assert_eq!(
             status_from(email(), CredentialVerdict::Expired),
-            SessionStatus::Expired {
-                email: "a@b.c".into()
-            }
+            SessionStatus::Expired { email: email() }
         );
         assert_eq!(
             status_from(email(), CredentialVerdict::Absent),
             SessionStatus::LoggedOut {
-                last_email: Some("a@b.c".into())
+                last_email: Some(email())
             }
-        );
-    }
-
-    #[test]
-    fn test_should_report_logged_out_when_no_email_regardless_of_verdict() {
-        assert_eq!(
-            status_from(None, CredentialVerdict::Valid),
-            SessionStatus::LoggedOut { last_email: None }
-        );
-        assert_eq!(
-            status_from(None, CredentialVerdict::Unknown),
-            SessionStatus::LoggedOut { last_email: None }
         );
     }
 
@@ -527,6 +518,32 @@ mod tests {
             account_session_status(&account),
             SessionStatus::LoggedOut { .. }
         ));
+    }
+
+    #[test]
+    fn test_should_keep_reading_fresh_during_auth_grace_after_invalidation() {
+        // A hover *during* the terminal action must not re-cache the pre-action
+        // state: after invalidate_verdict the dir stays uncached for AUTH_GRACE,
+        // so the state that lands when the action completes shows immediately.
+        let dir = logged_in_dir("a@b.c");
+        std::fs::write(dir.path().join(".credentials.json"), EXPIRED_CREDS).unwrap();
+        let account = account_with_dir(dir.path());
+        invalidate_verdict(dir.path()); // "Re-login…" clicked
+                                        // Hover while the terminal is still open: reads Expired (would cache it
+                                        // for VERDICT_TTL without the grace window).
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::Expired { .. }
+        ));
+        // The re-login lands; the next hover must already see it.
+        let valid = r#"{"claudeAiOauth":{"refreshTokenExpiresAt":4102444800000}}"#;
+        std::fs::write(dir.path().join(".credentials.json"), valid).unwrap();
+        assert_eq!(
+            account_session_status(&account),
+            SessionStatus::LoggedIn {
+                email: "a@b.c".into()
+            }
+        );
     }
 
     #[test]

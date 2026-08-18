@@ -15,11 +15,7 @@ pub fn run() {
         // running instance (which just surfaces Preferences) and exits, so
         // there is never a second tray icon reacting to the same menu.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            use tauri::Manager;
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
+            tray::show_preferences(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

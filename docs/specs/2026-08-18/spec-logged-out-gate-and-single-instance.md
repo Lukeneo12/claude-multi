@@ -70,8 +70,11 @@ double-launch sessions.
   `LoggedIn` (no regression of the never-lock-out guarantee from PR #11).
 - G4: The verdict cache does not make a fresh login look logged-out for 30s:
   `Absent` verdicts are not cached (an absent Keychain item returns instantly
-  and never prompts), and the cache entry for an account is dropped when a
-  Login/Logout/Re-login action is triggered from the tray.
+  and never prompts), and a Login/Logout/Re-login action from the tray drops
+  the account's cache entry **and** opens a 120s grace window during which the
+  dir is never re-cached — the credentials change only when the user finishes
+  in the terminal, so a hover in between must not pin the pre-action state for
+  another TTL (review finding on PR #13).
 - G5: Only one instance of the app runs; a second launch focuses the running
   instance's Preferences window and exits.
 - G6: Pure decision logic covered by `test_should_X_when_Y` unit tests;
@@ -111,7 +114,8 @@ double-launch sessions.
       (unchanged).
 - [ ] AC5: `Absent` verdicts are never stored in the verdict cache; triggering
       Login / Logout / Re-login from the tray drops the cached verdict for that
-      account's config dir.
+      account's config dir and, for the next 120s, every menu build re-reads
+      that dir (a state written mid-window is visible on the next hover).
 - [ ] AC6: With the app already running, starting it again does not create a
       second tray icon; the existing instance's Preferences window is shown
       and focused, and the second process exits.
@@ -135,7 +139,8 @@ double-launch sessions.
      `classify_security_failure(exit_code: Option<i32>, stderr: &str)`:
      exit code `44` or stderr containing `"could not be found"` → `Absent`;
      anything else (user denied the prompt, interaction not allowed, etc.) →
-     `Unreadable`.
+     `Unreadable`. (Implemented as `security_item_not_found(...) -> bool` so
+     the source layer doesn't return a verdict-layer enum.)
 2. Add `CredentialVerdict::Absent`. `cached_verdict` maps `Absent` →
    `Absent` (bypassing the cache write), `Unreadable` → `Unknown`,
    `Found(json)` → `evaluate_credentials`.
@@ -145,8 +150,10 @@ double-launch sessions.
    `status_from(email: Option<String>, verdict: CredentialVerdict) -> SessionStatus`
    so the mapping is unit-testable without I/O.
 4. `ensure_session_usable`: `LoggedOut` → `Err("'<label>' is not logged in. Use “Login…” in this account's tray menu first.")`.
-5. `pub fn invalidate_verdict(config_dir: &Path)`; called from
-   `commands::run_account_action` for `Login | Logout | Relogin`.
+5. `pub fn invalidate_verdict(config_dir: &Path)`: drops the cache entry and
+   records `now + AUTH_GRACE (120s)` in a `no_cache_until` map; `cached_verdict`
+   neither reads nor writes the cache for a dir inside its grace window. Called
+   from `commands::run_account_action` for `Login | Logout | Relogin`.
 
 Trade-off: `Absent` on macOS relies on the `security` CLI's not-found
 signal. Matching both the exit code (44) and the message keeps it robust to
@@ -163,7 +170,9 @@ builder (required by the plugin), with a callback that shows + focuses the
     if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); }
 }))
 ```
-No frontend or capability changes needed (the plugin has no JS API).
+The callback reuses `tray::show_preferences`, shared with the tray's
+"Preferences…" item. No frontend or capability changes needed (the plugin has
+no JS API).
 
 Alternative discarded: a lock file / PID check under the app-config dir —
 more code, no cross-instance signalling, stale-lock handling.

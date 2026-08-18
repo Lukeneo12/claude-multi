@@ -159,7 +159,6 @@ fn build_menu(
 
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-    use tauri::Manager;
     let cfg = Config::load(&paths::config_file_path(app.handle()));
     let menu = build_menu(app.handle(), &cfg)?;
 
@@ -198,12 +197,7 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         show_err(msg);
                     }
                 }
-                MenuAction::Prefs => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                }
+                MenuAction::Prefs => show_preferences(app),
                 MenuAction::Quit => app.exit(0),
                 MenuAction::Unknown => {}
             }
@@ -217,6 +211,17 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// Shows and focuses the Preferences window (the hidden-by-default `main`
+/// window). Shared by the tray's "Preferences…" item and the single-instance
+/// callback so any future tweak (unminimize, app activation) lands in one place.
+pub fn show_preferences(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
 }
 
 /// Rebuilds the tray menu from the current config without restarting the app.

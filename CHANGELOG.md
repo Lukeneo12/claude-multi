@@ -16,9 +16,11 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the tray), and
   `launch_session` / `open_session` refuse logged-out accounts with a message
   pointing at `Login…`. Unreadable credentials (e.g. a denied Keychain prompt)
-  keep the conservative logged-in fallback. `Absent` verdicts are not cached
-  and Login / Logout / Re-login drop the account's cached verdict, so a fresh
-  login shows up on the next hover instead of after the 30s TTL.
+  keep the conservative logged-in fallback. `Absent` verdicts are not cached,
+  and Login / Logout / Re-login drop the account's cached verdict and keep it
+  uncached for a 120s grace window (a hover while the terminal is still open no
+  longer re-caches the pre-action state), so the outcome shows up on the next
+  hover instead of after the 30s TTL.
 - **Second launch opened a second instance**: starting claude-multi while it
   is already running now focuses the running instance's Preferences window
   and exits, instead of spawning a second tray icon
