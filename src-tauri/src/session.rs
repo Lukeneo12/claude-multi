@@ -7,10 +7,15 @@
 //! first 8 hex chars of `sha256(CLAUDE_CONFIG_DIR)` — the exact string the
 //! launch scripts export, so hashing the expanded configured path matches.
 //!
-//! Verdicts are conservative: only positive evidence of expiry (a past
+//! Verdicts are conservative about *expiry*: only positive evidence (a past
 //! `refreshTokenExpiresAt`, or a past `expiresAt` with no refresh token) marks
-//! an account `Expired`. Unreadable or missing credentials keep the account
-//! `LoggedIn` so a denied Keychain prompt never locks the user out.
+//! an account `Expired`, and credentials that exist but can't be read (e.g. a
+//! denied Keychain prompt) keep the account `LoggedIn` so the user is never
+//! locked out. Credentials that are positively *absent* (no file, Keychain item
+//! not found) are a different matter: that is exactly what a logout leaves
+//! behind — `.claude.json` may still record the email — so the account is
+//! `LoggedOut`. This mirrors the CLI itself, whose `claude auth status` reports
+//! `loggedIn: false` from the credentials alone.
 
 use crate::config::Account;
 use crate::paths::expand_tilde;
@@ -35,8 +40,18 @@ pub enum CredentialVerdict {
     Valid,
     /// Positive evidence the session can no longer refresh itself.
     Expired,
-    /// Missing/unreadable/unparseable credentials — assume nothing.
+    /// Credentials exist but are unreadable/unparseable — assume nothing.
     Unknown,
+    /// No credentials at all (no file, Keychain item not found): logged out.
+    Absent,
+}
+
+/// Raw outcome of looking for the credentials of one config dir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CredentialSource {
+    Found(String),
+    Absent,
+    Unreadable,
 }
 
 /// Keychain service name Claude Code uses for a non-default `CLAUDE_CONFIG_DIR`.
@@ -84,32 +99,58 @@ pub fn evaluate_credentials(json: &str, now_ms: i64) -> CredentialVerdict {
     }
 }
 
-/// Reads the raw credentials JSON for one config dir: the `.credentials.json`
-/// file when present (Linux/Windows and older CLIs), else the macOS Keychain.
-fn read_credentials(config_dir: &Path) -> Option<String> {
+/// Looks up the raw credentials JSON for one config dir: the
+/// `.credentials.json` file when present (Linux/Windows and older CLIs), else
+/// the macOS Keychain. Distinguishes "nothing there" from "there but unreadable".
+fn read_credentials(config_dir: &Path) -> CredentialSource {
     let file = config_dir.join(".credentials.json");
-    if let Ok(contents) = std::fs::read_to_string(&file) {
-        return Some(contents);
+    match std::fs::read_to_string(&file) {
+        Ok(contents) => CredentialSource::Found(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => read_keychain_credentials(config_dir),
+        Err(_) => CredentialSource::Unreadable,
     }
-    read_keychain_credentials(config_dir)
+}
+
+/// Classifies a failed `security find-generic-password` run. The CLI signals a
+/// missing item with exit status 44 and the message "The specified item could
+/// not be found"; anything else (denied prompt, interaction not allowed, …)
+/// means the item may exist but we couldn't read it. Pure so it's testable on
+/// every OS; matching both signals keeps it robust to either one changing.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn classify_security_failure(exit_code: Option<i32>, stderr: &str) -> CredentialVerdict {
+    if exit_code == Some(44) || stderr.contains("could not be found") {
+        CredentialVerdict::Absent
+    } else {
+        CredentialVerdict::Unknown
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn read_keychain_credentials(config_dir: &Path) -> Option<String> {
+fn read_keychain_credentials(config_dir: &Path) -> CredentialSource {
     let service = keychain_service(&config_dir.to_string_lossy());
-    let output = std::process::Command::new("security")
+    let Ok(output) = std::process::Command::new("security")
         .args(["find-generic-password", "-w", "-s", &service])
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    else {
+        return CredentialSource::Unreadable;
+    };
+    if output.status.success() {
+        return match String::from_utf8(output.stdout) {
+            Ok(json) => CredentialSource::Found(json),
+            Err(_) => CredentialSource::Unreadable,
+        };
     }
-    String::from_utf8(output.stdout).ok()
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match classify_security_failure(output.status.code(), &stderr) {
+        CredentialVerdict::Absent => CredentialSource::Absent,
+        _ => CredentialSource::Unreadable,
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credentials(_config_dir: &Path) -> Option<String> {
-    None
+fn read_keychain_credentials(_config_dir: &Path) -> CredentialSource {
+    // No Keychain elsewhere: a missing `.credentials.json` is the whole story.
+    CredentialSource::Absent
 }
 
 /// How long a credential verdict is reused before re-reading its source.
@@ -124,7 +165,19 @@ fn verdict_cache() -> &'static Mutex<HashMap<PathBuf, (Instant, CredentialVerdic
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drops the cached verdict for one config dir. Called when a tray action is
+/// about to change the credentials (login / logout / re-login) so the next menu
+/// build re-reads them instead of serving a verdict from before the action.
+pub fn invalidate_verdict(config_dir: &Path) {
+    if let Ok(mut cache) = verdict_cache().lock() {
+        cache.remove(config_dir);
+    }
+}
+
 /// Cached wrapper around the credential read + evaluation for one config dir.
+/// `Absent` is never cached: a missing item returns instantly and never
+/// prompts, and not caching it means a fresh login shows up on the next hover
+/// instead of after the TTL.
 fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
     if let Ok(cache) = verdict_cache().lock() {
         if let Some((read_at, verdict)) = cache.get(config_dir) {
@@ -134,8 +187,11 @@ fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
         }
     }
     let verdict = match read_credentials(config_dir) {
-        Some(json) => evaluate_credentials(&json, chrono::Utc::now().timestamp_millis()),
-        None => CredentialVerdict::Unknown,
+        CredentialSource::Found(json) => {
+            evaluate_credentials(&json, chrono::Utc::now().timestamp_millis())
+        }
+        CredentialSource::Unreadable => CredentialVerdict::Unknown,
+        CredentialSource::Absent => return CredentialVerdict::Absent,
     };
     if let Ok(mut cache) = verdict_cache().lock() {
         cache.insert(config_dir.to_path_buf(), (Instant::now(), verdict));
@@ -143,28 +199,43 @@ fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
     verdict
 }
 
-/// Full status for one account, combining the recorded email with the token
-/// verdict. Never blocks a user out on missing evidence (see module docs).
-pub fn account_session_status(account: &Account) -> SessionStatus {
-    let Some(email) = account.logged_in_email() else {
+/// Pure mapping from the recorded email + credential verdict to a status.
+pub fn status_from(email: Option<String>, verdict: CredentialVerdict) -> SessionStatus {
+    let Some(email) = email else {
         return SessionStatus::LoggedOut;
     };
-    let config_dir = expand_tilde(&account.config_dir);
-    match cached_verdict(&config_dir) {
+    match verdict {
+        CredentialVerdict::Absent => SessionStatus::LoggedOut,
         CredentialVerdict::Expired => SessionStatus::Expired { email },
         CredentialVerdict::Valid | CredentialVerdict::Unknown => SessionStatus::LoggedIn { email },
     }
 }
 
-/// Launch-time gate: sessions and project launches refuse an expired account
-/// instead of opening a terminal that will just ask for login.
+/// Full status for one account, combining the recorded email with the token
+/// verdict. Never locks a user out on *unreadable* evidence (see module docs);
+/// only positively absent credentials read as logged out.
+pub fn account_session_status(account: &Account) -> SessionStatus {
+    let email = account.logged_in_email();
+    if email.is_none() {
+        return SessionStatus::LoggedOut; // no need to touch the credentials
+    }
+    let config_dir = expand_tilde(&account.config_dir);
+    status_from(email, cached_verdict(&config_dir))
+}
+
+/// Launch-time gate: sessions and project launches refuse a logged-out or
+/// expired account instead of opening a terminal that will just ask for login.
 pub fn ensure_session_usable(account: &Account) -> Result<(), String> {
     match account_session_status(account) {
+        SessionStatus::LoggedOut => Err(format!(
+            "'{}' is not logged in. Use “Login…” in this account's tray menu first.",
+            account.label
+        )),
         SessionStatus::Expired { email } => Err(format!(
             "The session for '{}' ({email}) has expired. Use “Re-login…” in this account's tray menu first.",
             account.label
         )),
-        _ => Ok(()),
+        SessionStatus::LoggedIn { .. } => Ok(()),
     }
 }
 
@@ -273,26 +344,162 @@ mod tests {
     }
 
     #[test]
-    fn test_should_allow_launch_when_account_logged_out() {
-        // The gate only blocks *expired* sessions; other states pass through
-        // (the tray already hides launch items for logged-out accounts).
+    fn test_should_refuse_launch_when_account_never_logged_in() {
+        // No email recorded → LoggedOut → the gate refuses and points at Login…
+        // (backstop for a stale menu or a direct `invoke`).
         let account = account_with_dir(Path::new("/nonexistent/cm-gate-dir"));
-        assert!(ensure_session_usable(&account).is_ok());
+        let err = ensure_session_usable(&account).unwrap_err();
+        assert!(err.contains("not logged in"));
+        assert!(err.contains("Login"));
+    }
+
+    #[test]
+    fn test_should_report_logged_out_when_email_recorded_but_credentials_absent() {
+        // The logout leftover: `.claude.json` still names the account, but the
+        // tokens are gone (no file; on macOS the Keychain item for a temp-dir
+        // service can't exist → "not found"). That is a logged-out account.
+        let dir = logged_in_dir("a@b.c");
+        let status = account_session_status(&account_with_dir(dir.path()));
+        assert_eq!(status, SessionStatus::LoggedOut);
+    }
+
+    #[test]
+    fn test_should_refuse_launch_when_email_recorded_but_credentials_absent() {
+        let dir = logged_in_dir("a@b.c");
+        let err = ensure_session_usable(&account_with_dir(dir.path())).unwrap_err();
+        assert!(err.contains("not logged in"));
+        assert!(err.contains("Login"));
     }
 
     #[test]
     fn test_should_stay_logged_in_when_credentials_unreadable() {
-        // Email present but no credentials source at all → conservative LoggedIn.
+        // Email present and a credentials source that exists but can't be read
+        // (a directory where the file should be) → Unknown → conservative
+        // LoggedIn, never a lock-out.
         let dir = logged_in_dir("a@b.c");
+        std::fs::create_dir(dir.path().join(".credentials.json")).unwrap();
         let status = account_session_status(&account_with_dir(dir.path()));
-        // On macOS this may consult the Keychain for a temp-dir service that
-        // can't exist, which cleanly reports "not found" → Unknown → LoggedIn.
         assert_eq!(
             status,
             SessionStatus::LoggedIn {
                 email: "a@b.c".into()
             }
         );
+    }
+
+    #[test]
+    fn test_should_classify_security_not_found_as_absent() {
+        assert_eq!(
+            classify_security_failure(
+                Some(44),
+                "security: SecKeychainSearchCopyNext: The specified item could not be found.\n"
+            ),
+            CredentialVerdict::Absent
+        );
+        // Either signal alone is enough.
+        assert_eq!(
+            classify_security_failure(Some(44), ""),
+            CredentialVerdict::Absent
+        );
+        assert_eq!(
+            classify_security_failure(Some(1), "The specified item could not be found."),
+            CredentialVerdict::Absent
+        );
+    }
+
+    #[test]
+    fn test_should_classify_other_security_failures_as_unknown() {
+        assert_eq!(
+            classify_security_failure(
+                Some(128),
+                "security: SecKeychainItemCopyContent: User canceled."
+            ),
+            CredentialVerdict::Unknown
+        );
+        assert_eq!(
+            classify_security_failure(Some(36), "User interaction is not allowed."),
+            CredentialVerdict::Unknown
+        );
+        assert_eq!(
+            classify_security_failure(None, ""),
+            CredentialVerdict::Unknown
+        );
+    }
+
+    #[test]
+    fn test_should_map_verdicts_to_status_when_email_recorded() {
+        let email = || Some("a@b.c".to_string());
+        assert_eq!(
+            status_from(email(), CredentialVerdict::Valid),
+            SessionStatus::LoggedIn {
+                email: "a@b.c".into()
+            }
+        );
+        assert_eq!(
+            status_from(email(), CredentialVerdict::Unknown),
+            SessionStatus::LoggedIn {
+                email: "a@b.c".into()
+            }
+        );
+        assert_eq!(
+            status_from(email(), CredentialVerdict::Expired),
+            SessionStatus::Expired {
+                email: "a@b.c".into()
+            }
+        );
+        assert_eq!(
+            status_from(email(), CredentialVerdict::Absent),
+            SessionStatus::LoggedOut
+        );
+    }
+
+    #[test]
+    fn test_should_report_logged_out_when_no_email_regardless_of_verdict() {
+        assert_eq!(
+            status_from(None, CredentialVerdict::Valid),
+            SessionStatus::LoggedOut
+        );
+        assert_eq!(
+            status_from(None, CredentialVerdict::Unknown),
+            SessionStatus::LoggedOut
+        );
+    }
+
+    #[test]
+    fn test_should_not_cache_absent_verdict_when_credentials_appear_later() {
+        // Absent is never cached: a login right after a hover must show up on
+        // the next menu build, not after the TTL.
+        let dir = logged_in_dir("a@b.c");
+        let account = account_with_dir(dir.path());
+        assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
+        let valid = r#"{"claudeAiOauth":{"refreshTokenExpiresAt":4102444800000}}"#;
+        std::fs::write(dir.path().join(".credentials.json"), valid).unwrap();
+        assert_eq!(
+            account_session_status(&account),
+            SessionStatus::LoggedIn {
+                email: "a@b.c".into()
+            }
+        );
+    }
+
+    #[test]
+    fn test_should_reread_credentials_when_verdict_invalidated() {
+        let dir = logged_in_dir("a@b.c");
+        std::fs::write(dir.path().join(".credentials.json"), EXPIRED_CREDS).unwrap();
+        let account = account_with_dir(dir.path());
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::Expired { .. }
+        ));
+        // Simulate a logout: tokens gone. The cache would still say Expired…
+        std::fs::remove_file(dir.path().join(".credentials.json")).unwrap();
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::Expired { .. }
+        ));
+        // …until the tray action drops it.
+        invalidate_verdict(dir.path());
+        assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
     }
 
     #[test]

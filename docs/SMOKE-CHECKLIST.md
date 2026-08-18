@@ -155,6 +155,25 @@ missing project path (see step 15).
   (conservative fallback).
 - `Re-login…` then restores the normal menu after authenticating.
 
+### 17. Logged-out account with a leftover email (all OSes)
+- Log an account out (tray `Log out`, or `/logout` inside a session) so its
+  tokens are gone but `<config_dir>/.claude.json` may still carry
+  `oauthAccount`. Open the tray menu: the account shows only `Login…` — no
+  "New session", no projects.
+- Trigger a launch anyway (e.g. `invoke('launch_session')` from the Preferences
+  devtools, or a stale menu): expect an error `'<label>' is not logged in. Use
+  “Login…”…` and no terminal opened.
+- `Login…`, authenticate, then hover the tray again: the normal menu is back
+  without waiting for the 30s verdict TTL.
+- macOS only: a **denied** Keychain prompt (not "item not found") still renders
+  the account as logged in (conservative fallback, unchanged).
+
+### 18. Single instance (all OSes)
+- With the app running, launch it a second time (macOS: `open -n` on the
+  bundle, or run the binary directly; Linux/Windows: run the executable again).
+- Expect **no second tray icon**; the running instance shows and focuses the
+  Preferences window; the second process exits.
+
 ---
 
 ## Inherited Resources

@@ -204,6 +204,16 @@ fn run_account_action(
     let config_dir = expand_tilde(&account.config_dir);
     let cd = config_dir.to_string_lossy();
 
+    // The action is about to change this account's credentials in the terminal:
+    // drop the cached verdict so the next menu build re-reads them instead of
+    // serving the pre-action state for the rest of the TTL.
+    if matches!(
+        action,
+        AccountAction::Login | AccountAction::Logout | AccountAction::Relogin
+    ) {
+        session::invalidate_verdict(&config_dir);
+    }
+
     // Logout needs no dir creation (the account is logged in already); the other
     // actions ensure the per-account dir exists for a first-run login.
     if !matches!(action, AccountAction::Logout) {
