@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Logged-out accounts could still launch projects**: an account whose
+  tokens were gone (Keychain item deleted / no `.credentials.json`) but whose
+  `.claude.json` still recorded the email rendered as `✓ <email>` with every
+  project launchable — the terminal then just asked to log in. Absent
+  credentials now read as `LoggedOut` (`○ <email> — logged out` + `Login…` in
+  the tray), and
+  `launch_session` / `open_session` refuse logged-out accounts with a message
+  pointing at `Login…`. Unreadable credentials (e.g. a denied Keychain prompt)
+  keep the conservative logged-in fallback. `Absent` verdicts are not cached,
+  and Login / Logout / Re-login drop the account's cached verdict and keep it
+  uncached for a 120s grace window (a hover while the terminal is still open no
+  longer re-caches the pre-action state), so the outcome shows up on the next
+  hover instead of after the 30s TTL.
+- **Second launch opened a second instance**: starting claude-multi while it
+  is already running now focuses the running instance's Preferences window
+  and exits, instead of spawning a second tray icon
+  (`tauri-plugin-single-instance`).
+
 ## [0.5.1] — 2026-07-31
 
 ### Added

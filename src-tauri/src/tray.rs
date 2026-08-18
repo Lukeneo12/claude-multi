@@ -131,9 +131,18 @@ fn build_menu(
                 let (relogin, logout) = account_auth_items(app, &account.id)?;
                 sub = sub.item(&relogin).item(&logout);
             }
-            session::SessionStatus::LoggedOut => {
+            session::SessionStatus::LoggedOut { last_email } => {
                 // Not logged in: only a login action — sessions and projects need
-                // an authenticated account first.
+                // an authenticated account first. If the tokens are gone but
+                // `.claude.json` still names the account, say which one it was.
+                if let Some(email) = last_email {
+                    let status_id = format!("status::{}", account.id);
+                    sub = sub.item(
+                        &MenuItemBuilder::with_id(status_id, format!("○ {email} — logged out"))
+                            .enabled(false)
+                            .build(app)?,
+                    );
+                }
                 let login_id = format!("login::{}", account.id);
                 sub = sub.item(&MenuItemBuilder::with_id(login_id, "Login…").build(app)?);
             }
@@ -150,7 +159,6 @@ fn build_menu(
 
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-    use tauri::Manager;
     let cfg = Config::load(&paths::config_file_path(app.handle()));
     let menu = build_menu(app.handle(), &cfg)?;
 
@@ -189,12 +197,7 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         show_err(msg);
                     }
                 }
-                MenuAction::Prefs => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                }
+                MenuAction::Prefs => show_preferences(app),
                 MenuAction::Quit => app.exit(0),
                 MenuAction::Unknown => {}
             }
@@ -208,6 +211,17 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// Shows and focuses the Preferences window (the hidden-by-default `main`
+/// window). Shared by the tray's "Preferences…" item and the single-instance
+/// callback so any future tweak (unminimize, app activation) lands in one place.
+pub fn show_preferences(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
 }
 
 /// Rebuilds the tray menu from the current config without restarting the app.
