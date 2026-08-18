@@ -4,7 +4,7 @@
 |-------|-------|
 | **Date** | 2026-08-18 |
 | **Author** | Lukeneo12 |
-| **Status** | Draft |
+| **Status** | Implemented (pending manual smoke §17/§18) |
 | **Type** | Fix (two independent fixes, one PR) |
 | **Related** | `docs/specs/2026-07-11/…` (n/a), PR #11 (expired-session detection) |
 
@@ -30,6 +30,18 @@ in. Verified against the CLI itself: `claude auth status` reports
 `loggedIn: false` for a config dir that has `oauthAccount` but no credentials
 — i.e. Claude Code decides login state from the credentials alone.
 
+What the user actually observed (2026-08-18): without ever logging out, a
+launched session asked for login while the tray still listed the projects.
+Both `claude auth logout` and an in-session `/logout` were later confirmed to
+strip `oauthAccount` too, so the "email left behind" state is **not** produced
+by a normal logout — it is produced when the tokens disappear by another route
+(most plausibly Claude Code dropping them after a failed refresh; also manual
+Keychain/file deletion). That is the case this spec makes detectable. The
+sibling case — tokens still stored locally but rejected server-side — is
+explicitly out of scope (see Non-goals) and can't be told apart offline; if it
+recurs, capture the credential *shape* (keys + expiries, no secrets) before
+re-logging in to decide whether it needs its own follow-up.
+
 Two gaps, then:
 - **Detection**: "credentials absent" is indistinguishable from "credentials
   unreadable" (e.g. a denied Keychain prompt), so it inherits the
@@ -49,7 +61,9 @@ double-launch sessions.
 ### Goals
 - G1: An account whose credentials are **absent** is reported `LoggedOut`,
   regardless of whether `.claude.json` still records an email; the tray then
-  offers only `Login…` for it.
+  offers only `Login…` for it, preceded by a disabled `○ <email> — logged out`
+  line when the email is still recorded (so the user knows which account it
+  was; confirmed with the user on 2026-08-18).
 - G2: `launch_session` and `open_session` refuse `LoggedOut` accounts with a
   clear message pointing at `Login…` (backstop for stale menus / direct calls).
 - G3: A denied or otherwise unreadable Keychain read stays `Unknown` →
@@ -65,12 +79,14 @@ double-launch sessions.
 
 ### Non-goals
 - Detecting server-side revocation (tokens present locally but rejected by
-  the API). That needs a network call; out of scope — the existing expiry
-  logic plus this fix cover everything observable offline.
+  the API). The only real validation of a refresh token is *using* it, and
+  Anthropic rotates refresh tokens — a probe from the app would clobber the
+  token Claude Code holds. Out of scope — the existing expiry logic plus this
+  fix cover everything observable offline.
 - Shelling out to `claude auth status` from the app. It is authoritative but
   the app process lacks the user's `PATH` (see project invariants), and it
   writes into the config dir (`backups/`, lock) as a side effect.
-- Changing the tray layout for `LoggedOut` beyond what exists (`Login…` only).
+- Any other tray-layout change for `LoggedOut` beyond the status line above.
 - Handling `--args` / deep links passed to the second instance; it just
   focuses the first.
 
@@ -78,8 +94,10 @@ double-launch sessions.
 
 - [ ] AC1: Given `.claude.json` has `oauthAccount.emailAddress` and no
       `.credentials.json` exists and (macOS) the Keychain item is not found,
-      when the tray menu is built, then the account submenu shows only
-      `Login…` (state `LoggedOut`).
+      when the tray menu is built, then the account submenu shows a disabled
+      `○ <email> — logged out` line and `Login…`, nothing else (state
+      `LoggedOut { last_email: Some(..) }`); an account with no recorded email
+      shows only `Login…` (`last_email: None`).
 - [ ] AC2: Given the same state, when `launch_session` or `open_session` is
       invoked for that account (tray or `invoke`), then it returns
       `Err` mentioning the account label and `Login…`, and no terminal is
@@ -121,8 +139,9 @@ double-launch sessions.
 2. Add `CredentialVerdict::Absent`. `cached_verdict` maps `Absent` →
    `Absent` (bypassing the cache write), `Unreadable` → `Unknown`,
    `Found(json)` → `evaluate_credentials`.
-3. `account_session_status`: `Absent` → `LoggedOut` even when an email is
-   recorded. Add a pure helper
+3. `account_session_status`: `Absent` → `LoggedOut { last_email: Some(email) }`
+   even when an email is recorded (`SessionStatus::LoggedOut` gains an
+   `Option<String>` so the tray can name the account). Add a pure helper
    `status_from(email: Option<String>, verdict: CredentialVerdict) -> SessionStatus`
    so the mapping is unit-testable without I/O.
 4. `ensure_session_usable`: `LoggedOut` → `Err("'<label>' is not logged in. Use “Login…” in this account's tray menu first.")`.

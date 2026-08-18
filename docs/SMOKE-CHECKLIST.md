@@ -158,8 +158,9 @@ missing project path (see step 15).
 ### 17. Logged-out account with a leftover email (all OSes)
 - Log an account out (tray `Log out`, or `/logout` inside a session) so its
   tokens are gone but `<config_dir>/.claude.json` may still carry
-  `oauthAccount`. Open the tray menu: the account shows only `Login…` — no
-  "New session", no projects.
+  `oauthAccount`. Open the tray menu: the account shows a disabled
+  `○ <email> — logged out` line (only if the email is still recorded) and
+  `Login…` — no "New session", no projects.
 - Trigger a launch anyway (e.g. `invoke('launch_session')` from the Preferences
   devtools, or a stale menu): expect an error `'<label>' is not logged in. Use
   “Login…”…` and no terminal opened.

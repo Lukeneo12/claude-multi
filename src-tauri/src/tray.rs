@@ -131,9 +131,18 @@ fn build_menu(
                 let (relogin, logout) = account_auth_items(app, &account.id)?;
                 sub = sub.item(&relogin).item(&logout);
             }
-            session::SessionStatus::LoggedOut => {
+            session::SessionStatus::LoggedOut { last_email } => {
                 // Not logged in: only a login action — sessions and projects need
-                // an authenticated account first.
+                // an authenticated account first. If the tokens are gone but
+                // `.claude.json` still names the account, say which one it was.
+                if let Some(email) = last_email {
+                    let status_id = format!("status::{}", account.id);
+                    sub = sub.item(
+                        &MenuItemBuilder::with_id(status_id, format!("○ {email} — logged out"))
+                            .enabled(false)
+                            .build(app)?,
+                    );
+                }
                 let login_id = format!("login::{}", account.id);
                 sub = sub.item(&MenuItemBuilder::with_id(login_id, "Login…").build(app)?);
             }

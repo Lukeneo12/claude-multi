@@ -27,9 +27,18 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionStatus {
-    LoggedOut,
-    LoggedIn { email: String },
-    Expired { email: String },
+    /// Not usable. `last_email` is the email `.claude.json` still records when
+    /// the tokens are gone (so the tray can say *which* account logged out);
+    /// `None` for an account that never logged in.
+    LoggedOut {
+        last_email: Option<String>,
+    },
+    LoggedIn {
+        email: String,
+    },
+    Expired {
+        email: String,
+    },
 }
 
 /// What the stored OAuth credentials say about the session, independent of
@@ -202,10 +211,12 @@ fn cached_verdict(config_dir: &Path) -> CredentialVerdict {
 /// Pure mapping from the recorded email + credential verdict to a status.
 pub fn status_from(email: Option<String>, verdict: CredentialVerdict) -> SessionStatus {
     let Some(email) = email else {
-        return SessionStatus::LoggedOut;
+        return SessionStatus::LoggedOut { last_email: None };
     };
     match verdict {
-        CredentialVerdict::Absent => SessionStatus::LoggedOut,
+        CredentialVerdict::Absent => SessionStatus::LoggedOut {
+            last_email: Some(email),
+        },
         CredentialVerdict::Expired => SessionStatus::Expired { email },
         CredentialVerdict::Valid | CredentialVerdict::Unknown => SessionStatus::LoggedIn { email },
     }
@@ -217,7 +228,7 @@ pub fn status_from(email: Option<String>, verdict: CredentialVerdict) -> Session
 pub fn account_session_status(account: &Account) -> SessionStatus {
     let email = account.logged_in_email();
     if email.is_none() {
-        return SessionStatus::LoggedOut; // no need to touch the credentials
+        return SessionStatus::LoggedOut { last_email: None }; // nothing to read
     }
     let config_dir = expand_tilde(&account.config_dir);
     status_from(email, cached_verdict(&config_dir))
@@ -227,7 +238,7 @@ pub fn account_session_status(account: &Account) -> SessionStatus {
 /// expired account instead of opening a terminal that will just ask for login.
 pub fn ensure_session_usable(account: &Account) -> Result<(), String> {
     match account_session_status(account) {
-        SessionStatus::LoggedOut => Err(format!(
+        SessionStatus::LoggedOut { .. } => Err(format!(
             "'{}' is not logged in. Use “Login…” in this account's tray menu first.",
             account.label
         )),
@@ -313,7 +324,10 @@ mod tests {
     #[test]
     fn test_should_report_logged_out_when_no_email_recorded() {
         let account = account_with_dir(Path::new("/nonexistent/cm-session-dir"));
-        assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
+        assert_eq!(
+            account_session_status(&account),
+            SessionStatus::LoggedOut { last_email: None }
+        );
     }
 
     /// Unique-per-run account dir (RAII cleanup even on assert panic), seeded
@@ -360,7 +374,12 @@ mod tests {
         // service can't exist → "not found"). That is a logged-out account.
         let dir = logged_in_dir("a@b.c");
         let status = account_session_status(&account_with_dir(dir.path()));
-        assert_eq!(status, SessionStatus::LoggedOut);
+        assert_eq!(
+            status,
+            SessionStatus::LoggedOut {
+                last_email: Some("a@b.c".into())
+            }
+        );
     }
 
     #[test]
@@ -449,7 +468,9 @@ mod tests {
         );
         assert_eq!(
             status_from(email(), CredentialVerdict::Absent),
-            SessionStatus::LoggedOut
+            SessionStatus::LoggedOut {
+                last_email: Some("a@b.c".into())
+            }
         );
     }
 
@@ -457,11 +478,11 @@ mod tests {
     fn test_should_report_logged_out_when_no_email_regardless_of_verdict() {
         assert_eq!(
             status_from(None, CredentialVerdict::Valid),
-            SessionStatus::LoggedOut
+            SessionStatus::LoggedOut { last_email: None }
         );
         assert_eq!(
             status_from(None, CredentialVerdict::Unknown),
-            SessionStatus::LoggedOut
+            SessionStatus::LoggedOut { last_email: None }
         );
     }
 
@@ -471,7 +492,10 @@ mod tests {
         // the next menu build, not after the TTL.
         let dir = logged_in_dir("a@b.c");
         let account = account_with_dir(dir.path());
-        assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::LoggedOut { .. }
+        ));
         let valid = r#"{"claudeAiOauth":{"refreshTokenExpiresAt":4102444800000}}"#;
         std::fs::write(dir.path().join(".credentials.json"), valid).unwrap();
         assert_eq!(
@@ -499,7 +523,10 @@ mod tests {
         ));
         // …until the tray action drops it.
         invalidate_verdict(dir.path());
-        assert_eq!(account_session_status(&account), SessionStatus::LoggedOut);
+        assert!(matches!(
+            account_session_status(&account),
+            SessionStatus::LoggedOut { .. }
+        ));
     }
 
     #[test]

@@ -12,7 +12,8 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tokens were gone (Keychain item deleted / no `.credentials.json`) but whose
   `.claude.json` still recorded the email rendered as `✓ <email>` with every
   project launchable — the terminal then just asked to log in. Absent
-  credentials now read as `LoggedOut` (only `Login…` in the tray), and
+  credentials now read as `LoggedOut` (`○ <email> — logged out` + `Login…` in
+  the tray), and
   `launch_session` / `open_session` refuse logged-out accounts with a message
   pointing at `Login…`. Unreadable credentials (e.g. a denied Keychain prompt)
   keep the conservative logged-in fallback. `Absent` verdicts are not cached
