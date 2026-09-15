@@ -210,11 +210,21 @@ pub fn ensure_inherited(
 }
 
 /// Result of one launch-time `seed_and_apply` pass.
+#[derive(Debug)]
 pub struct ApplyOutcome {
     /// Subdir names still needing a user decision (conflict or stale skip).
     pub needs_prompt: Vec<String>,
     /// Error message from the best-effort `settings.json` seed, if it failed.
     pub seed_error: Option<String>,
+}
+
+/// Error from `seed_and_apply`: the link-inheritance pass failed. Carries the
+/// best-effort seed error too, so callers can still surface it — the tray
+/// flow always printed the seed warning even when inheritance failed.
+#[derive(Debug)]
+pub struct ApplyError {
+    pub seed_error: Option<String>,
+    pub inherit_error: std::io::Error,
 }
 
 /// One launch-time inherit pass shared by the tray flow and the `cms` CLI:
@@ -225,13 +235,18 @@ pub fn seed_and_apply(
     source: &Path,
     config_dir: &Path,
     decisions: &std::collections::HashMap<String, InheritDecision>,
-) -> std::io::Result<ApplyOutcome> {
+) -> Result<ApplyOutcome, ApplyError> {
     let seed_error = ensure_seeded(source, config_dir).err().map(|e| e.to_string());
-    let outcome = ensure_inherited(source, config_dir, decisions)?;
-    Ok(ApplyOutcome {
-        needs_prompt: outcome.needs_prompt,
-        seed_error,
-    })
+    match ensure_inherited(source, config_dir, decisions) {
+        Ok(outcome) => Ok(ApplyOutcome {
+            needs_prompt: outcome.needs_prompt,
+            seed_error,
+        }),
+        Err(inherit_error) => Err(ApplyError {
+            seed_error,
+            inherit_error,
+        }),
+    }
 }
 
 /// Compute the read-only Inheritance-panel rows for one account: for each
@@ -806,5 +821,23 @@ mod io_tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn test_should_carry_seed_error_when_inherit_pass_also_fails() {
+        let base = std::env::temp_dir().join("cm_inherit_seed_and_apply_err");
+        let _ = std::fs::remove_dir_all(&base);
+        let source = base.join("dot-claude");
+        std::fs::create_dir_all(&source).unwrap();
+        touch(&source.join("agents").join("a.md"));
+        touch(&source.join("settings.json"));
+        // The account "dir" is a plain file: both the seed and the link pass fail.
+        let cfg = base.join("dot-claude-acct");
+        std::fs::write(&cfg, b"not a dir").unwrap();
+
+        let err = seed_and_apply(&source, &cfg, &HashMap::new()).unwrap_err();
+
+        assert!(err.seed_error.is_some());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
