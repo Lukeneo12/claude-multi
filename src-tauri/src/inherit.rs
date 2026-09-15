@@ -209,6 +209,31 @@ pub fn ensure_inherited(
     Ok(InheritOutcome { needs_prompt })
 }
 
+/// Result of one launch-time `seed_and_apply` pass.
+pub struct ApplyOutcome {
+    /// Subdir names still needing a user decision (conflict or stale skip).
+    pub needs_prompt: Vec<String>,
+    /// Error message from the best-effort `settings.json` seed, if it failed.
+    pub seed_error: Option<String>,
+}
+
+/// One launch-time inherit pass shared by the tray flow and the `cms` CLI:
+/// best-effort root-file seeding, then link inheritance. Does not print and
+/// does not persist decisions — the caller decides how to surface
+/// `seed_error` and `needs_prompt` (GUI prompt vs stderr warning).
+pub fn seed_and_apply(
+    source: &Path,
+    config_dir: &Path,
+    decisions: &std::collections::HashMap<String, InheritDecision>,
+) -> std::io::Result<ApplyOutcome> {
+    let seed_error = ensure_seeded(source, config_dir).err().map(|e| e.to_string());
+    let outcome = ensure_inherited(source, config_dir, decisions)?;
+    Ok(ApplyOutcome {
+        needs_prompt: outcome.needs_prompt,
+        seed_error,
+    })
+}
+
 /// Compute the read-only Inheritance-panel rows for one account: for each
 /// inheritable subdir, list source/dest entries and classify via `subdir_status`.
 /// Read/list only — never writes inside `source` (e.g. `~/.claude`).
@@ -760,5 +785,26 @@ mod io_tests {
             .file_type()
             .is_symlink());
         assert!(cfg.join("agents").join("a.md").exists());
+    }
+
+    #[test]
+    fn test_should_report_needs_prompt_and_link_clean_subdirs_when_seed_and_apply() {
+        let (source, cfg) = fixture("seed_and_apply");
+        // "agents" conflicts (dest has a real file with the same name);
+        // "commands" is clean and must link.
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join("a.md"));
+        touch(&source.join("commands").join("c.md"));
+        touch(&source.join("settings.json"));
+
+        let out = seed_and_apply(&source, &cfg, &HashMap::new()).unwrap();
+
+        assert_eq!(out.needs_prompt, vec!["agents".to_string()]);
+        assert_eq!(out.seed_error, None);
+        assert!(cfg.join("settings.json").is_file());
+        assert!(std::fs::symlink_metadata(cfg.join("commands").join("c.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }
