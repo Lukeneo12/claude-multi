@@ -75,6 +75,9 @@ the app's own config and launches `claude` inline with full parity with the tray
   (links for `agents`/`commands`/`skills`/`output-styles` honoring per-account
   `inherit_overrides`, one-shot seed of `settings.json`); failures there are
   best-effort exactly as in the tray flow and never write inside `~/.claude`.
+  Subdirs whose conflict is still undecided are skipped for that launch with a
+  stderr warning pointing at the tray — the CLI never opens a GUI prompt and
+  never writes `inherit_overrides` to `config.json`.
 - [ ] AC5: `cms --list` prints every configured account as `id  label  [email|not
   logged in]` and exits 0; `cms` with no arguments prints usage + the account list
   and exits non-zero.
@@ -138,6 +141,12 @@ Tauri-free module with the testable logic:
   would create `~/.claude-personal` state the user never configured.
 - **`cms` as the name:** short and typeable; `claude-multi` collides with the app
   binary name.
+- **No GUI prompt, no config writes from the CLI:** the tray flow prompts (dialog)
+  when an inherited subdir has an undecided conflict and persists the decision. The
+  CLI skips such subdirs for that launch and warns on stderr instead — avoids
+  concurrent `config.json` writes while the app is running and keeps the CLI
+  non-interactive. The shared inherit logic is extracted so both callers use
+  identical semantics and only the surfacing differs.
 
 ### Alternatives considered
 - **Option B — workspace refactor into `claude-multi-core`:** cleaner dependency
