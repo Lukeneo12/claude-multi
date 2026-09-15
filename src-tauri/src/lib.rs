@@ -1,13 +1,13 @@
-mod adapters;
-mod cli;
-mod commands;
-mod config;
-mod inherit;
-mod launcher;
-mod paths;
-mod session;
-mod tray;
-mod usage;
+pub mod adapters;
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod inherit;
+pub mod launcher;
+pub mod paths;
+pub mod session;
+pub mod tray;
+pub mod usage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

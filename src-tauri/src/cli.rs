@@ -7,7 +7,6 @@ use crate::config::Account;
 /// What the `cms` invocation asks for. `Help { explicit }` distinguishes
 /// `cms --help` (exit 0) from `cms` with no args (usage error, exit != 0).
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum CliCommand {
     Help { explicit: bool },
     List,
@@ -20,7 +19,6 @@ pub enum CliCommand {
 /// Why an account query failed to resolve. `Ambiguous` carries the candidate
 /// ids so the caller can list them.
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum AccountMatchError {
     NoMatch,
     Ambiguous(Vec<String>),
@@ -29,7 +27,6 @@ pub enum AccountMatchError {
 /// Resolves a user-typed query against configured accounts, case-insensitively
 /// over both `id` and `label`. An exact match wins outright; otherwise a
 /// unique prefix match resolves, and multiple prefix candidates are an error.
-#[allow(dead_code)]
 pub fn match_account<'a>(
     accounts: &'a [Account],
     query: &str,
@@ -62,7 +59,6 @@ pub fn match_account<'a>(
 /// Parses `cms` args (without the program name). The first arg selects the
 /// command; everything after an account query passes through to `claude`
 /// verbatim, in order.
-#[allow(dead_code)]
 pub fn parse_cli_args(args: &[String]) -> CliCommand {
     match args.first().map(String::as_str) {
         None => CliCommand::Help { explicit: false },
@@ -78,7 +74,6 @@ pub fn parse_cli_args(args: &[String]) -> CliCommand {
 /// Environment the `cms` bin sets on the `claude` child process. Values are
 /// native paths (via `PathBuf::join`) — no shell text is generated, so the
 /// script-escaping invariant does not apply here.
-#[allow(dead_code)]
 pub struct LaunchPlan {
     pub env: Vec<(String, String)>,
 }
@@ -87,7 +82,6 @@ pub struct LaunchPlan {
 /// `CLAUDE_CONFIG_DIR` first, then one entry per
 /// `launcher::PER_ACCOUNT_ENV_VARS` (`<config_dir>/<subdir>`), mirroring the
 /// tray's script builders.
-#[allow(dead_code)]
 pub fn launch_plan(account: &Account) -> LaunchPlan {
     let dir = crate::paths::expand_tilde(&account.config_dir);
     let mut env = vec![(
