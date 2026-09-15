@@ -154,7 +154,7 @@ cms dino --resume     # trailing args pass through to claude
 
 The account lookup is fuzzy (e.g. `cms pers` matches **Personal**). All inherited resources (`~/.claude` agents, commands, settings) are available just like a tray-launched session. Session state (login gate, Keychain/credentials) is the same: if the account is logged out or expired, the CLI refuses with a login hint.
 
-**Install**: `npm run install-cli` creates a symlink at `~/.local/bin/cms` pointing into this repo's release binary.
+**Install**: `npm run install-cli` builds the release binary and copies it to `~/.local/bin/cms` (re-run after rebuilding to pick up changes). It warns if `~/.local/bin` is not in your `PATH`.
 
 **Windows**: Compiling on Windows works (`cargo build --release --bin cms` from `src-tauri/`), but the install script is POSIX-only. After building, add `src-tauri\target\release` to your `PATH` environment variable and run `cms` from any terminal.
 

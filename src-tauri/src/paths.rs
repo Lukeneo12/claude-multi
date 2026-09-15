@@ -64,6 +64,17 @@ mod tests {
     }
 
     #[test]
+    fn test_should_match_tauri_conf_identifier_when_comparing_app_identifier() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["identifier"].as_str().unwrap(),
+            APP_IDENTIFIER,
+            "APP_IDENTIFIER must match `identifier` in tauri.conf.json — the CLI resolves its config path from it"
+        );
+    }
+
+    #[test]
     fn test_should_end_with_identifier_and_filename_when_resolving_standalone_path() {
         let p = standalone_config_file_path().unwrap();
         assert!(p.ends_with(format!("{APP_IDENTIFIER}/config.json")));

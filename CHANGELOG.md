@@ -11,7 +11,10 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`cms` CLI**: launch a session inline in the current terminal (IDE-integrated
   terminals) with `cms <account>` — fuzzy account matching, cwd as project, same
   session gate and `~/.claude` inheritance as the tray. Install with
-  `npm run install-cli`.
+  `npm run install-cli` (copies the binary to `~/.local/bin` and warns if it is
+  not in `PATH`). The CLI refuses a corrupt `config.json` instead of falling
+  back to the default `personal` account, reports an exact id/label tie as
+  ambiguous, and rejects extra args after `--list`/`--help`.
 
 ## [0.5.2] — 2026-08-18
 

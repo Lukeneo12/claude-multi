@@ -36,7 +36,11 @@ fn load_config() -> Result<Config, String> {
             path.display()
         ));
     }
-    Ok(Config::load(&path))
+    // Strict load: a corrupt config must not fall back to the default
+    // `personal` account, or the CLI would create ~/.claude-personal state
+    // the user never configured (see spec).
+    Config::try_load(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))
 }
 
 fn run() -> Result<ExitCode, String> {

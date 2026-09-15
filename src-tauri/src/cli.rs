@@ -25,7 +25,8 @@ pub enum AccountMatchError {
 }
 
 /// Resolves a user-typed query against configured accounts, case-insensitively
-/// over both `id` and `label`. An exact match wins outright; otherwise a
+/// over both `id` and `label`. A unique exact match wins outright (an exact
+/// hit on one account's `id` and another's `label` is ambiguous); otherwise a
 /// unique prefix match resolves, and multiple prefix candidates are an error.
 pub fn match_account<'a>(
     accounts: &'a [Account],
@@ -35,11 +36,18 @@ pub fn match_account<'a>(
     if q.is_empty() {
         return Err(AccountMatchError::NoMatch);
     }
-    if let Some(exact) = accounts
+    let exact: Vec<&Account> = accounts
         .iter()
-        .find(|a| a.id.to_lowercase() == q || a.label.to_lowercase() == q)
-    {
-        return Ok(exact);
+        .filter(|a| a.id.to_lowercase() == q || a.label.to_lowercase() == q)
+        .collect();
+    match exact.len() {
+        0 => {}
+        1 => return Ok(exact[0]),
+        _ => {
+            return Err(AccountMatchError::Ambiguous(
+                exact.iter().map(|a| a.id.clone()).collect(),
+            ))
+        }
     }
     let candidates: Vec<&Account> = accounts
         .iter()
@@ -58,12 +66,14 @@ pub fn match_account<'a>(
 
 /// Parses `cms` args (without the program name). The first arg selects the
 /// command; everything after an account query passes through to `claude`
-/// verbatim, in order.
+/// verbatim, in order. `--list`/`--help` take no extra args, and an unknown
+/// leading flag is a usage error rather than an account query.
 pub fn parse_cli_args(args: &[String]) -> CliCommand {
     match args.first().map(String::as_str) {
         None => CliCommand::Help { explicit: false },
-        Some("--help") | Some("-h") => CliCommand::Help { explicit: true },
-        Some("--list") | Some("-l") => CliCommand::List,
+        Some("--help") | Some("-h") if args.len() == 1 => CliCommand::Help { explicit: true },
+        Some("--list") | Some("-l") if args.len() == 1 => CliCommand::List,
+        Some(flag) if flag.starts_with('-') => CliCommand::Help { explicit: false },
         Some(query) => CliCommand::Launch {
             query: query.to_string(),
             claude_args: args[1..].to_vec(),
@@ -126,6 +136,34 @@ mod tests {
     fn test_should_return_list_when_list_flag() {
         assert_eq!(parse_cli_args(&args(&["--list"])), CliCommand::List);
         assert_eq!(parse_cli_args(&args(&["-l"])), CliCommand::List);
+    }
+
+    #[test]
+    fn test_should_return_usage_error_when_list_has_extra_args() {
+        assert_eq!(
+            parse_cli_args(&args(&["--list", "foo"])),
+            CliCommand::Help { explicit: false }
+        );
+        assert_eq!(
+            parse_cli_args(&args(&["-l", "foo"])),
+            CliCommand::Help { explicit: false }
+        );
+    }
+
+    #[test]
+    fn test_should_return_usage_error_when_help_has_extra_args() {
+        assert_eq!(
+            parse_cli_args(&args(&["--help", "foo"])),
+            CliCommand::Help { explicit: false }
+        );
+    }
+
+    #[test]
+    fn test_should_return_usage_error_when_first_arg_is_unknown_flag() {
+        assert_eq!(
+            parse_cli_args(&args(&["--bogus"])),
+            CliCommand::Help { explicit: false }
+        );
     }
 
     #[test]
@@ -209,6 +247,21 @@ mod tests {
             match_account(&accounts, "").unwrap_err(),
             AccountMatchError::NoMatch
         );
+    }
+
+    #[test]
+    fn test_should_error_ambiguous_when_query_is_exact_id_of_one_and_exact_label_of_another() {
+        let accounts = vec![account("work", "Job"), account("a2", "Work")];
+        assert_eq!(
+            match_account(&accounts, "work").unwrap_err(),
+            AccountMatchError::Ambiguous(vec!["work".to_string(), "a2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_should_match_when_query_is_both_id_and_label_of_same_account() {
+        let accounts = vec![account("work", "Work"), account("a2", "Other")];
+        assert_eq!(match_account(&accounts, "work").unwrap().id, "work");
     }
 
     #[test]

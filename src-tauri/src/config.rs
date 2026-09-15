@@ -104,11 +104,21 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Tray-side load: falls back to `Config::default()` on a missing or
+    /// unreadable file (deliberate for first-run). Callers that must not
+    /// invent the default `personal` account (the `cms` CLI) use `try_load`.
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| Config::default()),
             Err(_) => Config::default(),
         }
+    }
+
+    /// Strict load: errors instead of defaulting, so a corrupt `config.json`
+    /// never resolves to state the user did not configure.
+    pub fn try_load(path: &Path) -> Result<Config, String> {
+        let s = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&s).map_err(|e| format!("config.json is invalid: {e}"))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -159,6 +169,33 @@ mod tests {
     fn test_should_return_defaults_when_file_missing_or_invalid() {
         let loaded = Config::load(std::path::Path::new("/nonexistent/cm/config.json"));
         assert_eq!(loaded.accounts.len(), 1);
+    }
+
+    #[test]
+    fn test_should_try_load_config_when_file_valid() {
+        let dir = std::env::temp_dir().join("cm_cfg_tryload_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        Config::default().save(&path).unwrap();
+        let loaded = Config::try_load(&path).unwrap();
+        assert_eq!(loaded.accounts.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_error_when_try_load_finds_invalid_json() {
+        let dir = std::env::temp_dir().join("cm_cfg_tryload_corrupt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let err = Config::try_load(&path).unwrap_err();
+        assert!(err.contains("invalid"), "unexpected error: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_should_error_when_try_load_finds_no_file() {
+        assert!(Config::try_load(std::path::Path::new("/nonexistent/cm/config.json")).is_err());
     }
 
     #[test]

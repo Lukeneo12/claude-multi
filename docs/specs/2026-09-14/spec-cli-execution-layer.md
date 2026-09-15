@@ -93,7 +93,7 @@ the app's own config and launches `claude` inline with full parity with the tray
   `test_should_X_when_Y` naming; `cargo clippy --all-targets -- -D warnings` stays
   clean; `npm run build` unaffected.
 - [ ] AC9: `npm run install-cli` (or documented equivalent) builds the release bin and
-  symlinks it into `~/.local/bin/cms`.
+  copies it into `~/.local/bin/cms`, warning when `~/.local/bin` is not in `PATH`.
 
 ## 4. Approach
 
@@ -102,9 +102,10 @@ New `[[bin]] name = "cms"` target in `src-tauri` (the crate/app binary name
 Tauri-free module with the testable logic:
 
 - `src-tauri/src/cli.rs` — pure logic: `match_account(&[Account], query) ->
-  Result<&Account, MatchError>` (exact id/label match wins over prefix; ambiguity is
-  an error carrying candidates), `parse_args` (account query, `--list`, trailing
-  claude args), and launch-plan assembly (expanded config dir + env pairs, reusing
+  Result<&Account, MatchError>` (a unique exact id/label match wins over prefix; an
+  exact tie across accounts and prefix ambiguity are errors carrying candidates),
+  `parse_args` (account query, `--list`, trailing claude args; flags take no extra
+  args and unknown leading flags are usage errors), and launch-plan assembly (expanded config dir + env pairs, reusing
   `PER_ACCOUNT_ENV_VARS` semantics from `launcher.rs`).
 - `src-tauri/src/paths.rs` — add `standalone_config_file_path() -> Option<PathBuf>`
   using the `dirs` crate + the hardcoded bundle identifier, mirroring Tauri's
@@ -120,8 +121,9 @@ Tauri-free module with the testable logic:
 - `commands.rs` — refactor `ensure_account_inherits` so its account-level body
   (inherit + seed given a `&Config` + account id) is shared with the CLI instead of
   duplicated.
-- `package.json` — `install-cli` script: `cargo build --release --bin cms` +
-  `ln -sf` into `~/.local/bin`.
+- `package.json` — `install-cli` script: `cargo build --release --bin cms` + `cp`
+  into `~/.local/bin` (copy, not symlink, so a moved repo or `cargo clean` never
+  leaves a dangling link) + a warning when `~/.local/bin` is missing from `PATH`.
 - Docs: `CHANGELOG.md` entry, `docs/SMOKE-CHECKLIST.md` section for `cms`, README
   mention.
 
@@ -137,7 +139,10 @@ Tauri-free module with the testable logic:
   trivially.
 - **Missing config ≠ default config:** unlike the app, `cms` refuses to run without an
   existing `config.json` — silently inventing a default `personal` account from a CLI
-  would create `~/.claude-personal` state the user never configured.
+  would create `~/.claude-personal` state the user never configured. The same rule
+  covers a *corrupt* `config.json`: the CLI loads via strict `Config::try_load` and
+  errors instead of falling back to `Config::default()` (the tray keeps the lenient
+  `Config::load` for first-run).
 - **`cms` as the name:** short and typeable; `claude-multi` collides with the app
   binary name.
 - **No GUI prompt, no config writes from the CLI:** the tray flow prompts (dialog)
