@@ -248,6 +248,16 @@ missing project path (see step 15).
 
 ---
 
+## cms CLI
+
+- [ ] `cms --list` shows all configured accounts with logged-in emails.
+- [ ] `cms <prefix>` from a project dir starts claude inline (no new window) under the right account (`/status` inside claude shows the account's email).
+- [ ] `cms nope` exits non-zero listing available accounts.
+- [ ] `cms <logged-out-account>` refuses with the tray login hint before starting claude.
+- [ ] Trailing args pass through: `cms <account> --help` prints claude's help.
+
+---
+
 ## Known caveats
 
 - **Linux hover-refresh**: not available (no tray hover events); save-refresh works.

@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "install-cli": "cd src-tauri && cargo build --release --bin cms && mkdir -p \"$HOME/.local/bin\" && ln -sf \"$(pwd)/target/release/cms\" \"$HOME/.local/bin/cms\" && echo 'cms installed to ~/.local/bin/cms'"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`cms` CLI**: launch a session inline in the current terminal (IDE integrated
+  terminals) with `cms <account>` — fuzzy account matching, cwd as project, same
+  session gate and `~/.claude` inheritance as the tray. Install with
+  `npm run install-cli`.
+
 ## [0.5.2] — 2026-08-18
 
 ### Fixed

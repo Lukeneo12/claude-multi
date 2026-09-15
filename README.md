@@ -143,6 +143,22 @@ This compiles the Rust backend and launches the app. A tray icon appears in the 
 
 ---
 
+## CLI (`cms`)
+
+The `cms` CLI lets you launch Claude Code sessions directly from your terminal — ideal for IDE integrated terminals. Run `cms <account>` to start a session under that account in the current directory:
+
+```sh
+cms personal --project-label "my-project"   # fuzzy account matching
+```
+
+The account lookup is fuzzy (e.g. `cms pers` matches **Personal**). The `cwd` becomes the project directory, and all inherited resources (`~/.claude` agents, commands, settings) are available just like a tray-launched session. Session state (login gate, Keychain/credentials) is the same: if the account is logged out or expired, the CLI refuses with a login hint.
+
+**Install**: `npm run install-cli` creates a symlink at `~/.local/bin/cms` pointing into this repo's release binary.
+
+**Windows**: Compiling on Windows works (`cargo build --release --bin cms` from `src-tauri/`), but the install script is POSIX-only. After building, add `src-tauri\target\release` to your `PATH` environment variable and run `cms` from any terminal.
+
+---
+
 ## Terminal selection
 
 In **Preferences…**, choose which terminal opens for sessions and logins.
