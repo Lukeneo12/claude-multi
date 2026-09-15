@@ -2,6 +2,8 @@
 //! and launch-plan assembly. No I/O — the bin (`src/bin/cms.rs`) owns all
 //! printing, process spawning, and filesystem access.
 
+use crate::config::Account;
+
 /// What the `cms` invocation asks for. `Help { explicit }` distinguishes
 /// `cms --help` (exit 0) from `cms` with no args (usage error, exit != 0).
 #[derive(Debug, PartialEq)]
@@ -13,6 +15,48 @@ pub enum CliCommand {
         query: String,
         claude_args: Vec<String>,
     },
+}
+
+/// Why an account query failed to resolve. `Ambiguous` carries the candidate
+/// ids so the caller can list them.
+#[derive(Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum AccountMatchError {
+    NoMatch,
+    Ambiguous(Vec<String>),
+}
+
+/// Resolves a user-typed query against configured accounts, case-insensitively
+/// over both `id` and `label`. An exact match wins outright; otherwise a
+/// unique prefix match resolves, and multiple prefix candidates are an error.
+#[allow(dead_code)]
+pub fn match_account<'a>(
+    accounts: &'a [Account],
+    query: &str,
+) -> Result<&'a Account, AccountMatchError> {
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return Err(AccountMatchError::NoMatch);
+    }
+    if let Some(exact) = accounts
+        .iter()
+        .find(|a| a.id.to_lowercase() == q || a.label.to_lowercase() == q)
+    {
+        return Ok(exact);
+    }
+    let candidates: Vec<&Account> = accounts
+        .iter()
+        .filter(|a| {
+            a.id.to_lowercase().starts_with(&q) || a.label.to_lowercase().starts_with(&q)
+        })
+        .collect();
+    match candidates.len() {
+        0 => Err(AccountMatchError::NoMatch),
+        1 => Ok(candidates[0]),
+        _ => Err(AccountMatchError::Ambiguous(
+            candidates.iter().map(|a| a.id.clone()).collect(),
+        )),
+    }
 }
 
 /// Parses `cms` args (without the program name). The first arg selects the
@@ -81,6 +125,76 @@ mod tests {
                 query: "personal".to_string(),
                 claude_args: vec![],
             }
+        );
+    }
+
+    use crate::config::{Account, UsageLimits};
+    use std::collections::HashMap;
+
+    fn account(id: &str, label: &str) -> Account {
+        Account {
+            id: id.to_string(),
+            label: label.to_string(),
+            config_dir: format!("~/.claude-{id}"),
+            inherit_overrides: HashMap::new(),
+            usage_limits: UsageLimits::default(),
+        }
+    }
+
+    fn fixture_accounts() -> Vec<Account> {
+        vec![account("personal", "Personal"), account("a1", "Dinocloud")]
+    }
+
+    #[test]
+    fn test_should_match_by_exact_id_when_query_is_id() {
+        let accounts = fixture_accounts();
+        assert_eq!(match_account(&accounts, "a1").unwrap().id, "a1");
+    }
+
+    #[test]
+    fn test_should_match_case_insensitively_when_query_is_label() {
+        let accounts = fixture_accounts();
+        assert_eq!(match_account(&accounts, "DINOCLOUD").unwrap().id, "a1");
+    }
+
+    #[test]
+    fn test_should_match_by_unique_prefix_when_query_shortened() {
+        let accounts = fixture_accounts();
+        assert_eq!(match_account(&accounts, "dino").unwrap().id, "a1");
+        assert_eq!(match_account(&accounts, "per").unwrap().id, "personal");
+    }
+
+    #[test]
+    fn test_should_prefer_exact_match_when_query_is_also_prefix_of_other() {
+        // "work" is exact for one account and a prefix of "workshop".
+        let accounts = vec![account("work", "Work"), account("workshop", "Workshop")];
+        assert_eq!(match_account(&accounts, "work").unwrap().id, "work");
+    }
+
+    #[test]
+    fn test_should_error_no_match_when_query_matches_nothing() {
+        let accounts = fixture_accounts();
+        assert_eq!(
+            match_account(&accounts, "x").unwrap_err(),
+            AccountMatchError::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_should_error_no_match_when_query_empty() {
+        let accounts = fixture_accounts();
+        assert_eq!(
+            match_account(&accounts, "").unwrap_err(),
+            AccountMatchError::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_should_error_ambiguous_with_candidate_ids_when_prefix_matches_many() {
+        let accounts = vec![account("dev1", "Dev One"), account("dev2", "Dev Two")];
+        assert_eq!(
+            match_account(&accounts, "dev").unwrap_err(),
+            AccountMatchError::Ambiguous(vec!["dev1".to_string(), "dev2".to_string()])
         );
     }
 }
