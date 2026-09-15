@@ -497,6 +497,7 @@ name = "claude-multi"
 version = "0.5.2"
 dependencies = [
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "sha2",

@@ -26,7 +26,7 @@ fn powershell_single_quote_escape(s: &str) -> String {
 /// the exported value is `<config_dir>/<subdir>` (POSIX) or `<config_dir>\<subdir>`
 /// (PowerShell). Add an entry here to isolate another tool — no other code changes
 /// needed.
-const PER_ACCOUNT_ENV_VARS: &[(&str, &str)] = &[("GH_CONFIG_DIR", "gh")];
+pub const PER_ACCOUNT_ENV_VARS: &[(&str, &str)] = &[("GH_CONFIG_DIR", "gh")];
 
 /// Joins `config_dir` and `subdir` with the path separator for `kind`.
 fn join_config_subdir(kind: ScriptKind, config_dir: &str, subdir: &str) -> String {

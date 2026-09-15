@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "install-cli": "cd src-tauri && cargo build --release --bin cms && mkdir -p \"$HOME/.local/bin\" && cp \"$(pwd)/target/release/cms\" \"$HOME/.local/bin/cms\" && echo 'cms installed to ~/.local/bin/cms (re-run install-cli after rebuilding)' && case \":$PATH:\" in *\":$HOME/.local/bin:\"*) ;; *) echo 'warning: ~/.local/bin is not in your PATH — add it to your shell profile' ;; esac"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

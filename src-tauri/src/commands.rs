@@ -49,13 +49,19 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
         .unwrap_or_default();
 
     // Best-effort: seeding settings.json is a convenience and must never block
-    // the session launch.
-    if let Err(e) = inherit::ensure_seeded(&source, &config_dir) {
+    // the session launch — its warning prints even when the inherit pass fails.
+    let outcome = match inherit::seed_and_apply(&source, &config_dir, &decisions) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            if let Some(s) = e.seed_error {
+                eprintln!("settings.json seed failed for account '{account_id}': {s}");
+            }
+            return Err(e.inherit_error.to_string());
+        }
+    };
+    if let Some(e) = outcome.seed_error {
         eprintln!("settings.json seed failed for account '{account_id}': {e}");
     }
-
-    let outcome =
-        inherit::ensure_inherited(&source, &config_dir, &decisions).map_err(|e| e.to_string())?;
     if outcome.needs_prompt.is_empty() {
         return Ok(());
     }
