@@ -526,7 +526,7 @@ git commit --no-verify -m "feat: add launch plan assembly for cms CLI"
 
 **Interfaces:**
 - Consumes: existing `inherit::ensure_seeded(&Path, &Path) -> std::io::Result<()>`, `inherit::ensure_inherited(&Path, &Path, &HashMap<String, InheritDecision>) -> std::io::Result<InheritOutcome>`.
-- Produces: `pub struct ApplyOutcome { pub needs_prompt: Vec<String>, pub seed_error: Option<String> }` and `pub fn seed_and_apply(source: &Path, config_dir: &Path, decisions: &HashMap<String, InheritDecision>) -> std::io::Result<ApplyOutcome>` — used by `commands.rs` (this task) and Task 6. No printing inside — callers surface `seed_error` / `needs_prompt` their own way (GUI prompt vs stderr warning).
+- Produces: `pub struct ApplyOutcome { pub needs_prompt: Vec<String>, pub seed_error: Option<String> }`, `pub struct ApplyError { pub seed_error: Option<String>, pub inherit_error: std::io::Error }` (both `#[derive(Debug)]`) and `pub fn seed_and_apply(source: &Path, config_dir: &Path, decisions: &HashMap<String, InheritDecision>) -> Result<ApplyOutcome, ApplyError>` — used by `commands.rs` (this task) and Task 6. No printing inside — callers surface `seed_error` / `needs_prompt` their own way (GUI prompt vs stderr warning). The error variant carries `seed_error` too, so the best-effort seed warning survives an inherit failure (behavior parity with the pre-refactor tray flow, which printed it unconditionally before inheriting).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -566,11 +566,21 @@ Add to `src-tauri/src/inherit.rs`, right below `ensure_inherited`:
 
 ```rust
 /// Result of one launch-time `seed_and_apply` pass.
+#[derive(Debug)]
 pub struct ApplyOutcome {
     /// Subdir names still needing a user decision (conflict or stale skip).
     pub needs_prompt: Vec<String>,
     /// Error message from the best-effort `settings.json` seed, if it failed.
     pub seed_error: Option<String>,
+}
+
+/// Error from `seed_and_apply`: the link-inheritance pass failed. Carries the
+/// best-effort seed error too, so callers can still surface it — the tray
+/// flow always printed the seed warning even when inheritance failed.
+#[derive(Debug)]
+pub struct ApplyError {
+    pub seed_error: Option<String>,
+    pub inherit_error: std::io::Error,
 }
 
 /// One launch-time inherit pass shared by the tray flow and the `cms` CLI:
@@ -581,13 +591,18 @@ pub fn seed_and_apply(
     source: &Path,
     config_dir: &Path,
     decisions: &std::collections::HashMap<String, InheritDecision>,
-) -> std::io::Result<ApplyOutcome> {
+) -> Result<ApplyOutcome, ApplyError> {
     let seed_error = ensure_seeded(source, config_dir).err().map(|e| e.to_string());
-    let outcome = ensure_inherited(source, config_dir, decisions)?;
-    Ok(ApplyOutcome {
-        needs_prompt: outcome.needs_prompt,
-        seed_error,
-    })
+    match ensure_inherited(source, config_dir, decisions) {
+        Ok(outcome) => Ok(ApplyOutcome {
+            needs_prompt: outcome.needs_prompt,
+            seed_error,
+        }),
+        Err(inherit_error) => Err(ApplyError {
+            seed_error,
+            inherit_error,
+        }),
+    }
 }
 ```
 
@@ -618,9 +633,16 @@ with:
 
 ```rust
     // Best-effort: seeding settings.json is a convenience and must never block
-    // the session launch.
-    let outcome = inherit::seed_and_apply(&source, &config_dir, &decisions)
-        .map_err(|e| e.to_string())?;
+    // the session launch — its warning prints even when the inherit pass fails.
+    let outcome = match inherit::seed_and_apply(&source, &config_dir, &decisions) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            if let Some(s) = e.seed_error {
+                eprintln!("settings.json seed failed for account '{account_id}': {s}");
+            }
+            return Err(e.inherit_error.to_string());
+        }
+    };
     if let Some(e) = outcome.seed_error {
         eprintln!("settings.json seed failed for account '{account_id}': {e}");
     }
@@ -653,7 +675,7 @@ git commit --no-verify -m "refactor: extract shared seed_and_apply inherit pass"
 - Test: manual verification (edge I/O; all decision logic already unit-tested in Tasks 1–5)
 
 **Interfaces:**
-- Consumes (all from `claude_multi_lib`): `cli::{parse_cli_args, CliCommand, match_account, AccountMatchError, launch_plan}`, `config::Config` (+ `Account::logged_in_email`), `paths::standalone_config_file_path`, `paths::expand_tilde`, `session::ensure_session_usable`, `inherit::seed_and_apply`.
+- Consumes (all from `claude_multi_lib`): `cli::{parse_cli_args, CliCommand, match_account, AccountMatchError, launch_plan}`, `config::Config` (+ `Account::logged_in_email`), `paths::standalone_config_file_path`, `paths::expand_tilde`, `session::ensure_session_usable`, `inherit::seed_and_apply` (returns `Result<ApplyOutcome, ApplyError>`; the `Err` carries `seed_error` + `inherit_error`).
 - Produces: the `cms` binary (cargo auto-discovers `src/bin/cms.rs`; no `[[bin]]` section needed).
 
 - [ ] **Step 1: Make the lib modules public**
@@ -762,16 +784,23 @@ fn run() -> Result<ExitCode, String> {
             let source = paths::expand_tilde("~/.claude");
             if source.is_dir() {
                 let config_dir = paths::expand_tilde(&account.config_dir);
-                let outcome =
-                    inherit::seed_and_apply(&source, &config_dir, &account.inherit_overrides)
-                        .map_err(|e| e.to_string())?;
-                if let Some(e) = outcome.seed_error {
-                    eprintln!("warning: settings.json seed failed: {e}");
-                }
-                for sub in &outcome.needs_prompt {
-                    eprintln!(
-                        "warning: '{sub}' has a conflict with ~/.claude and no saved decision; launching without inheriting it. Launch once from the tray to resolve."
-                    );
+                match inherit::seed_and_apply(&source, &config_dir, &account.inherit_overrides) {
+                    Ok(outcome) => {
+                        if let Some(e) = outcome.seed_error {
+                            eprintln!("warning: settings.json seed failed: {e}");
+                        }
+                        for sub in &outcome.needs_prompt {
+                            eprintln!(
+                                "warning: '{sub}' has a conflict with ~/.claude and no saved decision; launching without inheriting it. Launch once from the tray to resolve."
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(s) = e.seed_error {
+                            eprintln!("warning: settings.json seed failed: {s}");
+                        }
+                        return Err(e.inherit_error.to_string());
+                    }
                 }
             }
 
