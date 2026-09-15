@@ -236,7 +236,9 @@ pub fn seed_and_apply(
     config_dir: &Path,
     decisions: &std::collections::HashMap<String, InheritDecision>,
 ) -> Result<ApplyOutcome, ApplyError> {
-    let seed_error = ensure_seeded(source, config_dir).err().map(|e| e.to_string());
+    let seed_error = ensure_seeded(source, config_dir)
+        .err()
+        .map(|e| e.to_string());
     match ensure_inherited(source, config_dir, decisions) {
         Ok(outcome) => Ok(ApplyOutcome {
             needs_prompt: outcome.needs_prompt,

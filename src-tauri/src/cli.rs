@@ -8,7 +8,9 @@ use crate::config::Account;
 /// `cms --help` (exit 0) from `cms` with no args (usage error, exit != 0).
 #[derive(Debug, PartialEq)]
 pub enum CliCommand {
-    Help { explicit: bool },
+    Help {
+        explicit: bool,
+    },
     List,
     Launch {
         query: String,
@@ -51,9 +53,7 @@ pub fn match_account<'a>(
     }
     let candidates: Vec<&Account> = accounts
         .iter()
-        .filter(|a| {
-            a.id.to_lowercase().starts_with(&q) || a.label.to_lowercase().starts_with(&q)
-        })
+        .filter(|a| a.id.to_lowercase().starts_with(&q) || a.label.to_lowercase().starts_with(&q))
         .collect();
     match candidates.len() {
         0 => Err(AccountMatchError::NoMatch),
