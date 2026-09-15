@@ -75,6 +75,34 @@ pub fn parse_cli_args(args: &[String]) -> CliCommand {
     }
 }
 
+/// Environment the `cms` bin sets on the `claude` child process. Values are
+/// native paths (via `PathBuf::join`) — no shell text is generated, so the
+/// script-escaping invariant does not apply here.
+#[allow(dead_code)]
+pub struct LaunchPlan {
+    pub env: Vec<(String, String)>,
+}
+
+/// Builds the env for launching `claude` under `account`:
+/// `CLAUDE_CONFIG_DIR` first, then one entry per
+/// `launcher::PER_ACCOUNT_ENV_VARS` (`<config_dir>/<subdir>`), mirroring the
+/// tray's script builders.
+#[allow(dead_code)]
+pub fn launch_plan(account: &Account) -> LaunchPlan {
+    let dir = crate::paths::expand_tilde(&account.config_dir);
+    let mut env = vec![(
+        "CLAUDE_CONFIG_DIR".to_string(),
+        dir.to_string_lossy().into_owned(),
+    )];
+    for (var, subdir) in crate::launcher::PER_ACCOUNT_ENV_VARS {
+        env.push((
+            (*var).to_string(),
+            dir.join(subdir).to_string_lossy().into_owned(),
+        ));
+    }
+    LaunchPlan { env }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +223,40 @@ mod tests {
         assert_eq!(
             match_account(&accounts, "dev").unwrap_err(),
             AccountMatchError::Ambiguous(vec!["dev1".to_string(), "dev2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_should_expand_tilde_when_building_launch_plan() {
+        let plan = launch_plan(&account("personal", "Personal"));
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap();
+        let expected_dir = std::path::PathBuf::from(&home).join(".claude-personal");
+        assert_eq!(
+            plan.env[0],
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                expected_dir.to_string_lossy().into_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn test_should_include_per_account_env_vars_when_building_launch_plan() {
+        let plan = launch_plan(&account("personal", "Personal"));
+        let gh = plan
+            .env
+            .iter()
+            .find(|(k, _)| k == "GH_CONFIG_DIR")
+            .expect("GH_CONFIG_DIR present");
+        let claude_dir = &plan.env[0].1;
+        assert_eq!(
+            gh.1,
+            std::path::Path::new(claude_dir)
+                .join("gh")
+                .to_string_lossy()
+                .into_owned()
         );
     }
 }
