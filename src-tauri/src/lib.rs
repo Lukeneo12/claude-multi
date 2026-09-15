@@ -1,4 +1,5 @@
 mod adapters;
+mod cli;
 mod commands;
 mod config;
 mod inherit;
