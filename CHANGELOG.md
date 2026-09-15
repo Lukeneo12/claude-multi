@@ -8,7 +8,7 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`cms` CLI**: launch a session inline in the current terminal (IDE integrated
+- **`cms` CLI**: launch a session inline in the current terminal (IDE-integrated
   terminals) with `cms <account>` — fuzzy account matching, cwd as project, same
   session gate and `~/.claude` inheritance as the tray. Install with
   `npm run install-cli`.

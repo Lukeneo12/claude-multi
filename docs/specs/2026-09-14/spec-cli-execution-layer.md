@@ -61,8 +61,7 @@ the app's own config and launches `claude` inline with full parity with the tray
 
 - [ ] AC1: Given account label `Dinocloud` (id `a1`), `cms dino`, `cms a1`, and
   `cms DINOCLOUD` all resolve to that account; `cms x` (no match) and an ambiguous
-  prefix both exit non-zero with an error listing `id (label)` for every configured
-  account.
+  prefix both exit non-zero with an error listing every configured account (id, label, auth state).
 - [ ] AC2: `cms <account>` run from directory `D` replaces the CLI process with
   `claude` (Unix `exec`; Windows spawn + wait, propagating the exit code) with
   `CLAUDE_CONFIG_DIR=<expanded account config_dir>` and

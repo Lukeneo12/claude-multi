@@ -95,7 +95,7 @@ fn run() -> Result<ExitCode, String> {
                         if let Some(s) = e.seed_error {
                             eprintln!("warning: settings.json seed failed: {s}");
                         }
-                        return Err(e.inherit_error.to_string());
+                        return Err(format!("inheriting ~/.claude failed: {}", e.inherit_error));
                     }
                 }
             }
@@ -133,7 +133,9 @@ fn exec_claude(
     let status = cmd
         .status()
         .map_err(|e| format!("failed to launch claude: {e}"))?;
-    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+    Ok(ExitCode::from(
+        u8::try_from(status.code().unwrap_or(1)).unwrap_or(1),
+    ))
 }
 
 fn main() -> ExitCode {
