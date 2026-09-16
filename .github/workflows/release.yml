@@ -76,9 +76,43 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+  # One release object, created before any platform builds. Letting each
+  # matrix job create its own release races: in v0.6.0 four concurrent jobs
+  # produced two drafts for the same tag, splitting the nine installers
+  # across them. The build job below uploads into this id instead.
+  create-release:
+    name: Create draft release
+    needs: quality
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create or reuse the draft release
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # A re-run must reuse the existing draft rather than add a second one.
+          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq "[.[] | select(.tag_name == \"$TAG_NAME\")] | first | .id // empty")
+          if [ -z "$RELEASE_ID" ]; then
+            RELEASE_ID=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG_NAME" \
+              -f name="claude-multi $TAG_NAME" \
+              -f body="$(printf 'Download the installer for your OS below.\n\nBuilds are **unsigned** (ad-hoc) — on first launch your OS may warn\nabout an unidentified developer. See the README for how to allow it.')" \
+              -F draft=true -F prerelease=false --jq .id)
+          fi
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
   release:
     name: Build & release (${{ matrix.platform }} ${{ matrix.args }})
-    needs: quality
+    needs: [quality, create-release]
     # Only build/publish on a version tag. A manual workflow_dispatch from a
     # branch runs just the `quality` gate (no bogus release is created).
     if: startsWith(github.ref, 'refs/tags/v')
@@ -141,8 +175,8 @@ jobs:
         run: npm ci
 
       # tauri-action runs `tauri build` (which runs the frontend build via
-      # beforeBuildCommand), bundles per-OS installers, and uploads them to a
-      # draft GitHub Release named after the tag.
+      # beforeBuildCommand), bundles per-OS installers, and uploads them to
+      # the draft release created by the `create-release` job.
       #
       # To produce signed/notarized builds later, add the signing secrets and
       # expose them here, e.g. (macOS):
@@ -158,13 +192,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'claude-multi ${{ github.ref_name }}'
-          releaseBody: |
-            Download the installer for your OS below.
-
-            Builds are **unsigned** (ad-hoc) — on first launch your OS may warn
-            about an unidentified developer. See the README for how to allow it.
-          releaseDraft: true
-          prerelease: false
+          # Upload into the release `create-release` already made. Passing
+          # releaseId (instead of tagName/releaseName) is what keeps the
+          # concurrent matrix jobs from each creating their own draft.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
