@@ -228,6 +228,16 @@ This produces a release bundle **for the OS you build on** (Tauri can't cross-co
 
 So **each platform builds its own** — clone the repo and run the command on macOS, Linux, and Windows respectively (or wire up CI with per-OS runners later).
 
+**Check the bundle before shipping it.** The crate builds two binaries (the tray app and the `cms` CLI), and the bundler has to pick the app one — `v0.6.0` shipped bundles whose only executable was the CLI, with every build reporting success. `Cargo.toml` declares its `[[bin]]` targets explicitly, app binary first, to keep that choice deterministic; **keep the app binary first if you add another one**. On macOS, confirm a build is sound with:
+
+```sh
+APP=src-tauri/target/release/bundle/macos/claude-multi.app
+plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist"   # → claude-multi
+otool -L "$APP/Contents/MacOS/claude-multi" | grep WebKit           # the app links WebKit; the CLI doesn't
+```
+
+The release workflow runs this same check on its macOS jobs, and `docs/SMOKE-CHECKLIST.md` covers what to verify on a draft release before publishing it.
+
 **Unsigned builds**: bundles are ad-hoc signed (no Developer ID / notarization), so other machines' Gatekeeper/SmartScreen will warn. On macOS the recipient can right-click → **Open** once, or run `xattr -dr com.apple.quarantine /Applications/claude-multi.app`. Frictionless distribution needs platform code-signing (e.g. Apple Developer ID + notarization via `bundle.macOS.signingIdentity` and the `APPLE_*` env vars) — not set up here.
 
 Useful flags: `--bundles app|dmg|deb|…` to pick targets; `--target universal-apple-darwin` for a universal macOS binary (`rustup target add x86_64-apple-darwin` first).

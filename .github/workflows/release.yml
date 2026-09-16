@@ -197,3 +197,26 @@ jobs:
           # concurrent matrix jobs from each creating their own draft.
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      # v0.6.0 shipped a bundle whose only executable was the `cms` CLI — with
+      # two bin targets the bundler picked the wrong one, and every job still
+      # reported success. The app links WebKit and the CLI does not, which is
+      # the cheapest proof that the bundled binary is really the tray app.
+      - name: Verify the bundle ships the app binary
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          APP=$(find src-tauri/target -type d -name 'claude-multi.app' | head -1)
+          if [ -z "$APP" ]; then
+            echo "no claude-multi.app bundle found" >&2
+            exit 1
+          fi
+          EXEC=$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")
+          if [ "$EXEC" != "claude-multi" ]; then
+            echo "CFBundleExecutable is '$EXEC', expected 'claude-multi'" >&2
+            exit 1
+          fi
+          if ! otool -L "$APP/Contents/MacOS/$EXEC" | grep -q WebKit.framework; then
+            echo "bundled '$EXEC' does not link WebKit — it is not the tray app" >&2
+            exit 1
+          fi

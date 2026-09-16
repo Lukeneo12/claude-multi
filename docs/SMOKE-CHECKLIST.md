@@ -258,6 +258,27 @@ missing project path (see step 15).
 
 ---
 
+## Release artifacts (before publishing a draft)
+
+The `v0.6.0` draft shipped a `.app` whose only executable was the `cms` CLI —
+every build job reported success, so the break was visible only in the
+artifact. Download the draft's installer and check it before publishing;
+never publish a draft whose bundle nobody opened.
+
+- [ ] The draft release carries the full asset set (9 files: `.dmg` ×2,
+      `.app.tar.gz` ×2, `.deb`, `.rpm`, `.AppImage`, `.exe`, `.msi`). A short
+      list means a job failed or uploaded to a second draft for the same tag.
+- [ ] macOS: mount the `aarch64.dmg` and confirm
+      `Contents/MacOS/claude-multi` exists and is ~10 MB (`plutil -extract
+      CFBundleExecutable raw .../Info.plist` prints `claude-multi`, and
+      `otool -L` on it lists `WebKit.framework` — the CLI links neither).
+- [ ] Install that build and launch it: the tray icon appears and its menu
+      lists the configured accounts.
+- [ ] `defaults read /Applications/claude-multi.app/Contents/Info.plist
+      CFBundleShortVersionString` matches the tag.
+
+---
+
 ## Known caveats
 
 - **Linux hover-refresh**: not available (no tray hover events); save-refresh works.
