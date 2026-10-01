@@ -70,7 +70,7 @@ Clicking the tray icon shows one submenu per account:
 ```
 Personal ▸
   New session                 ← claude under this account, no project
-  cozify-backend              ← this account's projects
+  my-backend                  ← this account's projects
   ──────────────
   ✓ you@example.com           ← logged-in email (or "Login…" if not)
   Re-login…                   ← claude auth logout + login (switch account)
