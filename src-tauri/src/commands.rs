@@ -404,8 +404,8 @@ mod validate_project_dir_tests {
     #[test]
     fn test_should_name_project_and_path_when_dir_missing() {
         let missing = std::path::Path::new("/nonexistent/cm-project");
-        let err = validate_project_dir("cozify-backend", missing).unwrap_err();
-        assert!(err.contains("cozify-backend"));
+        let err = validate_project_dir("my-backend", missing).unwrap_err();
+        assert!(err.contains("my-backend"));
         assert!(err.contains("/nonexistent/cm-project"));
         assert!(!err.contains("terminal"), "must not blame the terminal");
     }
