@@ -110,8 +110,13 @@ pub enum LoadOutcome {
     Loaded(Config),
     /// No file on disk (first run).
     Missing,
-    /// The file exists but is unreadable or not valid config JSON.
+    /// The file exists but is not valid config JSON: safe to back up, the
+    /// user must fix it.
     Corrupt(String),
+    /// I/O error other than `NotFound` (permissions, a transient `EIO`, a
+    /// Windows sharing violation mid-rename): the file may be perfectly
+    /// valid, so it is never backed up.
+    Unreadable(std::io::Error),
 }
 
 impl Config {
@@ -123,19 +128,21 @@ impl Config {
                 Err(e) => LoadOutcome::Corrupt(format!("config.json is invalid: {e}")),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => LoadOutcome::Missing,
-            Err(e) => LoadOutcome::Corrupt(format!("config.json is unreadable: {e}")),
+            Err(e) => LoadOutcome::Unreadable(e),
         }
     }
 
-    /// Tray-side load: falls back to `Config::default()` on a missing or
-    /// corrupt file and never writes anything (it runs on every hover, so a
-    /// backup here would spam files). Mutating/launching paths use
+    /// Tray-side load: falls back to `Config::default()` on a missing,
+    /// corrupt or unreadable file and never writes anything (it runs on every
+    /// hover, so a backup here would spam files). Mutating/launching paths use
     /// `load_strict`; callers that must not invent the default `personal`
     /// account (the `cms` CLI) use `try_load`.
     pub fn load(path: &Path) -> Config {
         match Config::read(path) {
             LoadOutcome::Loaded(cfg) => cfg,
-            LoadOutcome::Missing | LoadOutcome::Corrupt(_) => Config::default(),
+            LoadOutcome::Missing | LoadOutcome::Corrupt(_) | LoadOutcome::Unreadable(_) => {
+                Config::default()
+            }
         }
     }
 
@@ -149,11 +156,16 @@ impl Config {
     /// Strict load for the app: a missing file is a legitimate first run
     /// (defaults); a corrupt one is backed up next to it and surfaced as an
     /// error, leaving the original untouched so no later save can silently
-    /// replace it with defaults.
+    /// replace it with defaults. An unreadable file (permissions, transient
+    /// I/O error) is only reported: it may be valid, so no backup and no
+    /// "delete it" advice.
     pub fn load_strict(path: &Path) -> Result<Config, String> {
         match Config::read(path) {
             LoadOutcome::Loaded(cfg) => Ok(cfg),
             LoadOutcome::Missing => Ok(Config::default()),
+            LoadOutcome::Unreadable(e) => Err(format!(
+                "config.json could not be read: {e}. Check the file permissions and try again."
+            )),
             LoadOutcome::Corrupt(reason) => {
                 let note = match backup_corrupt(path) {
                     Ok(b) => format!("a copy was saved to {}", b.display()),
@@ -280,6 +292,10 @@ pub fn validate_unique_config_dirs(cfg: &Config) -> Result<(), String> {
 /// every incoming account whose id exists on disk, the disk overrides win.
 /// New accounts keep the incoming (empty) map; accounts absent from `incoming`
 /// are dropped.
+///
+/// Consequently any edit Preferences makes to this field on an existing
+/// account is **intentionally discarded** here. A future UI that wants to edit
+/// inherit decisions must go through `set_inherit_decision`, not `save_config`.
 pub fn merge_inherit_overrides(mut incoming: Config, on_disk: &Config) -> Config {
     for account in &mut incoming.accounts {
         if let Some(existing) = on_disk.account(&account.id) {
@@ -693,18 +709,80 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
+    /// Sets `mode` on `path` for the test's lifetime and restores the original
+    /// mode on drop, so a failed assertion still lets `TempDir` clean up.
+    #[cfg(unix)]
+    struct RestoreMode {
+        path: PathBuf,
+        original: u32,
+    }
+
+    #[cfg(unix)]
+    impl RestoreMode {
+        fn set(path: &Path, mode: u32) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let original = std::fs::metadata(path).unwrap().permissions().mode();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            Self {
+                path: path.to_path_buf(),
+                original,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &self.path,
+                std::fs::Permissions::from_mode(self.original),
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_should_keep_old_content_when_save_fails_before_persist() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, "old content").unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let _guard = RestoreMode::set(dir.path(), 0o555);
         let res = Config::default().save(&path);
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(res.is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old content");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_should_report_unreadable_not_corrupt_when_read_permission_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        Config::default().save(&path).unwrap();
+        let _guard = RestoreMode::set(&path, 0o000);
+        assert!(
+            matches!(Config::read(&path), LoadOutcome::Unreadable(_)),
+            "a permission error on a valid file is not corruption"
+        );
+        // The lenient tray load still falls back to the default, never writes.
+        assert_eq!(Config::load(&path), Config::default());
+        assert!(corrupt_backups(dir.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_should_err_without_backup_when_config_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        Config::default().save(&path).unwrap();
+        let _guard = RestoreMode::set(&path, 0o000);
+        let err = Config::load_strict(&path).unwrap_err();
+        assert!(err.contains("could not be read"), "unexpected error: {err}");
+        assert!(
+            !err.contains("delete"),
+            "must not tell the user to delete a valid file: {err}"
+        );
+        assert!(corrupt_backups(dir.path()).is_empty());
     }
 
     #[test]
