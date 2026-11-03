@@ -250,10 +250,14 @@ pub fn ensure_inherited(
     let mut needs_prompt = Vec::new();
     for sub in INHERITED_SUBDIRS {
         let src_sub = source.join(sub);
-        if !src_sub.is_dir() {
-            continue; // nothing to inherit from this subdir
-        }
         let dest_sub = config_dir.join(sub);
+        if !src_sub.is_dir() {
+            // Nothing to inherit; links into the now-missing subdir are
+            // dangling by definition, so prune them (own files untouched).
+            let dest_entries = read_dest_entries(&dest_sub)?;
+            prune_links(&src_sub, &dest_sub, &[], &dest_entries, true)?;
+            continue;
+        }
         let source_entries = read_entry_names(&src_sub)?;
         let dest_entries = read_dest_entries(&dest_sub)?;
         match resolve_subdir(decisions.get(*sub), &source_entries, &dest_entries) {
@@ -290,14 +294,26 @@ fn prune_links(
     Ok(())
 }
 
-#[cfg(unix)]
+/// Removes one planned link. Re-checks that `path` is still a symlink right
+/// before unlinking: if a real file took its place between planning and
+/// removal, it is account-owned content and is left alone.
 fn remove_link(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => remove_symlink(path),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
 }
 
 /// Directory symlinks on Windows must be removed with `remove_dir`.
 #[cfg(windows)]
-fn remove_link(path: &Path) -> std::io::Result<()> {
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path))
 }
 
@@ -914,6 +930,40 @@ mod io_tests {
 
         assert!(is_link(&cfg.join("agents").join("a.md")));
         assert!(!is_link(&cfg.join("agents").join("b.md"))); // dangling link gone
+    }
+
+    #[test]
+    fn test_should_prune_dangling_links_when_source_subdir_deleted() {
+        let (source, cfg) = fixture("source_subdir_deleted");
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join("own.md"));
+        ensure_inherited(&source, &cfg, &decide("agents", InheritDecision::Merge)).unwrap();
+        assert!(is_link(&cfg.join("agents").join("a.md")));
+        let foreign = cfg.join("foreign-target.md");
+        touch(&foreign);
+        symlink(&foreign, cfg.join("agents").join("foreign.md")).unwrap();
+        std::fs::remove_dir_all(source.join("agents")).unwrap();
+
+        let out =
+            ensure_inherited(&source, &cfg, &decide("agents", InheritDecision::Merge)).unwrap();
+
+        assert!(out.needs_prompt.is_empty());
+        assert!(!is_link(&cfg.join("agents").join("a.md"))); // dangling link gone
+        assert!(cfg.join("agents").join("own.md").is_file()); // account-owned kept
+        assert!(is_link(&cfg.join("agents").join("foreign.md"))); // foreign kept
+    }
+
+    #[test]
+    fn test_should_leave_regular_file_in_place_when_remove_link_finds_no_symlink() {
+        let (_source, cfg) = fixture("remove_link_guard");
+        // A real file that appeared where a link was planned (plan/removal race).
+        let own = cfg.join("agents").join("own.md");
+        touch(&own);
+        remove_link(&own).unwrap();
+        assert!(
+            own.is_file(),
+            "remove_link must never delete account-owned content"
+        );
     }
 
     #[test]
