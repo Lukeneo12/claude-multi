@@ -19,13 +19,16 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shown when the terminal can't be opened now quote paths for POSIX shells and
   for PowerShell (including the per-account env vars), instead of always
   assuming POSIX.
-
+- **Unreadable config is not treated as corrupt**: a permission or transient
+  I/O error while reading `config.json` is reported as such, without creating
+  a backup or suggesting to delete the file.
 - **Corrupt-config backups are private**: `config.json.corrupt-<ts>` is now
   created with `0600` on Unix (it was `0644` while `config.json` is `0600`).
 - **Skip now un-inherits**: switching a subdir from Merge to Skip removes the
   symlinks previously created into `~/.claude/<sub>` (only links pointing
   there; the account's own files and foreign symlinks are untouched). Merge
-  also drops links whose source entry was deleted. Windows copy-fallback
+  also drops links whose source entry was deleted, and deleting a whole
+  `~/.claude/<sub>` directory prunes every link into it. Windows copy-fallback
   entries can't be identified as inherited and are left in place.
 - **OS junk is never inherited**: `.DS_Store`, `Thumbs.db` and `desktop.ini`
   are excluded from linking, from the Inheritance status and from conflict

@@ -184,7 +184,7 @@ Config is stored as `config.json` in the Tauri app-config directory:
 
 You can edit it directly; the tray reflects changes on the next save (from Preferences) or hover.
 
-If the configured terminal can't be opened, the app copies a manual command to the clipboard so you can paste and run it yourself.
+If the configured terminal can't be opened, the app copies a manual command to the clipboard so you can paste and run it yourself. On Windows the PowerShell variant sets `$env:CLAUDE_CONFIG_DIR` (and the other per-account variables) in your current session, so a later `claude` in that same window keeps using that account until you close it or clear the variable.
 
 ---
 

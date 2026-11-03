@@ -258,6 +258,13 @@ missing project path (see step 15).
       Preferences → a clear error about the invalid `config.json` is displayed
       (no silent default `personal` account). Saving does not overwrite the file.
 - [ ] **Recovery:** fix or delete the file, relaunch → Preferences loads normally.
+- [ ] **Unreadable config is not backed up:** with a valid `config.json`, run
+      `chmod 000` on it and open Preferences → the error says the file could not
+      be read (no "fix or delete" advice) and **no** `config.json.corrupt-*`
+      backup appears. `chmod 600` it back → Preferences loads normally.
+- [ ] **Deleted source subdir prunes links:** inherit `agents`, then delete
+      `~/.claude/agents` entirely and launch a session → the dangling links in
+      `~/.claude-<suffix>/agents` are gone; account-owned files there are kept.
 - [ ] **Inherit decision survives Save:** in the Inheritance panel click **Skip**
       on a row, then without reloading edit anything (e.g. a label) and click
       **Save**. Re-open the panel → the row is still `skipped` and
