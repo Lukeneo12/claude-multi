@@ -1,9 +1,18 @@
-use crate::config::{Config, InheritDecision};
+use crate::config::{
+    apply_inherit_decisions, merge_inherit_overrides, Config, ConfigStore, InheritDecision,
+};
 use crate::paths::expand_tilde;
-use crate::{adapters, inherit, launcher, paths, session};
+use crate::{adapters, inherit, launcher, session};
 use serde::Serialize;
-use tauri::AppHandle;
+use std::collections::HashMap;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+
+/// Strict config load through the process-wide store: a corrupt `config.json`
+/// is an error (and is backed up), never silently replaced by defaults.
+fn load_config(app: &AppHandle) -> Result<Config, String> {
+    app.state::<ConfigStore>().load()
+}
 
 /// Ask the user, once per subdir, whether to merge the shared resources into an
 /// account that already has its own. Returns the chosen decision.
@@ -39,8 +48,10 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
         return Ok(()); // nothing to inherit from
     }
 
-    let cfg_path = paths::config_file_path(app);
-    let mut cfg = Config::load(&cfg_path);
+    // Lock-free read: the config lock must never be held across the blocking
+    // prompt below (sync commands and tray events share the main thread and
+    // `Mutex` is not reentrant).
+    let cfg = load_config(app)?;
 
     let config_dir = expand_tilde(&cfg.account(account_id).ok_or("unknown account")?.config_dir);
     let decisions = cfg
@@ -66,17 +77,17 @@ fn ensure_account_inherits(app: &AppHandle, account_id: &str) -> Result<(), Stri
         return Ok(());
     }
 
-    // Prompt once per conflicted subdir, then persist and re-apply.
-    let mut new_decisions = decisions;
+    // Prompt once per conflicted subdir (no lock held), then persist only the
+    // new decisions through the store so concurrent edits are merged, not lost.
+    let mut prompted = HashMap::new();
     for sub in &outcome.needs_prompt {
-        new_decisions.insert(sub.clone(), prompt_inherit_decision(app, account_id, sub));
+        prompted.insert(sub.clone(), prompt_inherit_decision(app, account_id, sub));
     }
-    if let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == account_id) {
-        account.inherit_overrides = new_decisions.clone();
-    }
-    cfg.save(&cfg_path).map_err(|e| e.to_string())?;
+    let merged = app
+        .state::<ConfigStore>()
+        .update(|c| apply_inherit_decisions(c, account_id, &prompted))?;
 
-    inherit::ensure_inherited(&source, &config_dir, &new_decisions).map_err(|e| e.to_string())?;
+    inherit::ensure_inherited(&source, &config_dir, &merged).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -95,27 +106,6 @@ fn validate_project_dir(label: &str, path: &std::path::Path) -> Result<(), Strin
     }
 }
 
-/// Builds the paste-able fallback command: `CLAUDE_CONFIG_DIR='…' sh -c "<inner>"`.
-fn manual_sh(config_dir: &str, inner: &str) -> String {
-    format!("CLAUDE_CONFIG_DIR='{config_dir}' sh -c \"{inner}\"")
-}
-
-pub fn manual_command(config_dir: &str, project_path: &str) -> String {
-    manual_sh(config_dir, &format!("cd '{project_path}' && exec claude"))
-}
-
-pub fn manual_login_command(config_dir: &str) -> String {
-    manual_sh(config_dir, "exec claude")
-}
-
-pub fn manual_logout_command(config_dir: &str) -> String {
-    manual_sh(config_dir, "claude auth logout")
-}
-
-pub fn manual_relogin_command(config_dir: &str) -> String {
-    manual_sh(config_dir, "claude auth logout; claude auth login")
-}
-
 #[derive(Serialize)]
 pub struct TerminalInfo {
     pub id: String,
@@ -123,16 +113,21 @@ pub struct TerminalInfo {
 }
 
 #[tauri::command]
-pub fn get_config(app: AppHandle) -> Config {
-    Config::load(&paths::config_file_path(&app))
+pub fn get_config(app: AppHandle) -> Result<Config, String> {
+    load_config(&app)
 }
 
 #[tauri::command]
 pub fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
-    config
-        .save(&paths::config_file_path(&app))
-        .map_err(|e| e.to_string())?;
-    // Rebuild the tray menu so changes apply immediately, no restart needed.
+    // Reject before taking the store lock: pure check, nothing to persist yet.
+    crate::config::validate_unique_config_dirs(&config)?;
+    // Preferences never edits inherit_overrides: keep whatever is on disk (a
+    // tray-prompt decision may have landed since the UI loaded its copy).
+    app.state::<ConfigStore>().update(|disk| {
+        *disk = merge_inherit_overrides(config, disk);
+        Ok(())
+    })?;
+    // Rebuild (after the lock is released) the tray menu so changes apply immediately, no restart needed.
     let _ = crate::tray::refresh_tray(&app);
     Ok(())
 }
@@ -154,7 +149,7 @@ pub fn launch_session(
     account_id: String,
     project_id: String,
 ) -> Result<(), String> {
-    let cfg = Config::load(&paths::config_file_path(&app));
+    let cfg = load_config(&app)?;
     let account = cfg.account(&account_id).ok_or("unknown account")?;
     let project = cfg.project(&project_id).ok_or("unknown project")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
@@ -173,7 +168,7 @@ pub fn launch_session(
     let script_path = launcher::write_script(&script, adapter.kind).map_err(|e| e.to_string())?;
 
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|e| {
-        let _ = app.clipboard().write_text(manual_command(&cd, &pp));
+        let _ = app.clipboard().write_text(launcher::manual_command(adapter.kind, &cd, &pp));
         format!(
             "Couldn't open terminal '{}' ({e}). The launch command was copied to your clipboard — paste it into any terminal.",
             adapter.id
@@ -197,7 +192,7 @@ fn run_account_action(
     account_id: &str,
     action: AccountAction,
 ) -> Result<(), String> {
-    let cfg = Config::load(&paths::config_file_path(app));
+    let cfg = load_config(app)?;
     let account = cfg.account(account_id).ok_or("unknown account")?;
     let adapter = adapters::find_adapter(&cfg.terminal).ok_or("unknown terminal")?;
 
@@ -233,22 +228,22 @@ fn run_account_action(
     let (script, fallback, what) = match action {
         AccountAction::Login => (
             launcher::build_login_script(adapter.kind, &cd),
-            manual_login_command(&cd),
+            launcher::manual_login_command(adapter.kind, &cd),
             "login",
         ),
         AccountAction::Session => (
             launcher::build_login_script(adapter.kind, &cd),
-            manual_login_command(&cd),
+            launcher::manual_login_command(adapter.kind, &cd),
             "the session",
         ),
         AccountAction::Logout => (
             launcher::build_logout_script(adapter.kind, &cd),
-            manual_logout_command(&cd),
+            launcher::manual_logout_command(adapter.kind, &cd),
             "logout",
         ),
         AccountAction::Relogin => (
             launcher::build_relogin_script(adapter.kind, &cd),
-            manual_relogin_command(&cd),
+            launcher::manual_relogin_command(adapter.kind, &cd),
             "re-login",
         ),
     };
@@ -291,7 +286,7 @@ pub fn get_inherit_status(
     app: AppHandle,
     account_id: String,
 ) -> Result<Vec<inherit::InheritSubdirStatus>, String> {
-    let cfg = Config::load(&paths::config_file_path(&app));
+    let cfg = load_config(&app)?;
     let account = cfg.account(&account_id).ok_or("unknown account")?;
     let config_dir = expand_tilde(&account.config_dir);
     let source = expand_tilde("~/.claude");
@@ -313,63 +308,21 @@ pub fn set_inherit_decision(
         return Err(format!("unknown subdir: {subdir}"));
     }
     let source = expand_tilde("~/.claude");
-    let cfg_path = paths::config_file_path(&app);
-    let mut cfg = Config::load(&cfg_path);
-    let config_dir = expand_tilde(
-        &cfg.account(&account_id)
+    let new = HashMap::from([(subdir, decision)]);
+    let (config_dir, decisions) = app.state::<ConfigStore>().update(|c| {
+        let decisions = apply_inherit_decisions(c, &account_id, &new)?;
+        let dir = c
+            .account(&account_id)
             .ok_or("unknown account")?
-            .config_dir,
-    );
-
-    let account = cfg
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .ok_or("unknown account")?;
-    account.inherit_overrides.insert(subdir, decision);
-    let decisions = account.inherit_overrides.clone();
-    cfg.save(&cfg_path).map_err(|e| e.to_string())?;
+            .config_dir
+            .clone();
+        Ok((expand_tilde(&dir), decisions))
+    })?;
 
     if source.is_dir() {
         inherit::ensure_inherited(&source, &config_dir, &decisions).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod fallback_tests {
-    use super::{
-        manual_command, manual_login_command, manual_logout_command, manual_relogin_command,
-    };
-    #[test]
-    fn test_should_build_manual_command_when_spawn_fails() {
-        let cmd = manual_command("/home/u/.claude-dino", "/repo");
-        assert_eq!(
-            cmd,
-            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"cd '/repo' && exec claude\""
-        );
-    }
-    #[test]
-    fn test_should_build_manual_login_command_when_spawn_fails() {
-        let cmd = manual_login_command("/home/u/.claude-dino");
-        assert_eq!(
-            cmd,
-            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"exec claude\""
-        );
-    }
-    #[test]
-    fn test_should_build_manual_logout_command_when_spawn_fails() {
-        let cmd = manual_logout_command("/home/u/.claude-dino");
-        assert_eq!(
-            cmd,
-            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout\""
-        );
-    }
-    #[test]
-    fn test_should_build_manual_relogin_command_when_spawn_fails() {
-        let cmd = manual_relogin_command("/home/u/.claude-dino");
-        assert_eq!(cmd, "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' sh -c \"claude auth logout; claude auth login\"");
-    }
 }
 
 #[cfg(test)]

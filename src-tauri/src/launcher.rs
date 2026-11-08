@@ -16,7 +16,6 @@ fn posix_single_quote_escape(s: &str) -> String {
 
 /// Escapes single quotes for PowerShell single-quoted strings.
 /// Each `'` in the value becomes `''` (doubled single quote).
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn powershell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
@@ -128,6 +127,97 @@ pub fn build_relogin_script(kind: ScriptKind, config_dir: &str) -> String {
             )
         }
     }
+}
+
+/// Which interactive action a paste-able fallback command performs.
+#[derive(Clone, Copy)]
+enum ManualAction<'a> {
+    Command(&'a str),
+    Login,
+    Logout,
+    Relogin,
+}
+
+/// Shell-specific `CLAUDE_CONFIG_DIR` + per-account env assignments.
+/// POSIX: inline prefix (`VAR='x' VAR2='y' `), valid for the one command it precedes.
+/// PowerShell: `$env:` statements joined by `; ` (they persist in the session).
+fn manual_env(kind: ScriptKind, config_dir: &str) -> String {
+    match kind {
+        ScriptKind::Posix => {
+            let mut out = format!(
+                "CLAUDE_CONFIG_DIR='{}'",
+                posix_single_quote_escape(config_dir)
+            );
+            for (var, subdir) in PER_ACCOUNT_ENV_VARS {
+                let value = join_config_subdir(kind, config_dir, subdir);
+                out.push_str(&format!(" {var}='{}'", posix_single_quote_escape(&value)));
+            }
+            out
+        }
+        ScriptKind::PowerShell => {
+            let mut out = format!(
+                "$env:CLAUDE_CONFIG_DIR='{}'",
+                powershell_single_quote_escape(config_dir)
+            );
+            for (var, subdir) in PER_ACCOUNT_ENV_VARS {
+                let value = join_config_subdir(kind, config_dir, subdir);
+                out.push_str(&format!(
+                    "; $env:{var}='{}'",
+                    powershell_single_quote_escape(&value)
+                ));
+            }
+            out
+        }
+    }
+}
+
+/// Builds a paste-able one-liner for `action`, escaped for the shell `kind`.
+/// Never wraps in `sh -c` (nested quoting) and never `exec`s (it would kill the
+/// user's interactive shell).
+fn build_manual(kind: ScriptKind, config_dir: &str, action: ManualAction) -> String {
+    let env = manual_env(kind, config_dir);
+    match kind {
+        ScriptKind::Posix => match action {
+            ManualAction::Command(project_path) => format!(
+                "cd '{}' && {env} claude",
+                posix_single_quote_escape(project_path)
+            ),
+            ManualAction::Login => format!("{env} claude"),
+            ManualAction::Logout => format!("{env} claude auth logout"),
+            ManualAction::Relogin => {
+                format!("{env} claude auth logout; {env} claude auth login")
+            }
+        },
+        ScriptKind::PowerShell => match action {
+            ManualAction::Command(project_path) => format!(
+                "{env}; Set-Location -LiteralPath '{}'; claude",
+                powershell_single_quote_escape(project_path)
+            ),
+            ManualAction::Login => format!("{env}; claude"),
+            ManualAction::Logout => format!("{env}; claude auth logout"),
+            ManualAction::Relogin => format!("{env}; claude auth logout; claude auth login"),
+        },
+    }
+}
+
+/// Paste-able fallback for a project launch (cd + `claude`).
+pub fn manual_command(kind: ScriptKind, config_dir: &str, project_path: &str) -> String {
+    build_manual(kind, config_dir, ManualAction::Command(project_path))
+}
+
+/// Paste-able fallback for login / a plain session (`claude`).
+pub fn manual_login_command(kind: ScriptKind, config_dir: &str) -> String {
+    build_manual(kind, config_dir, ManualAction::Login)
+}
+
+/// Paste-able fallback for `claude auth logout`.
+pub fn manual_logout_command(kind: ScriptKind, config_dir: &str) -> String {
+    build_manual(kind, config_dir, ManualAction::Logout)
+}
+
+/// Paste-able fallback for logout followed by login.
+pub fn manual_relogin_command(kind: ScriptKind, config_dir: &str) -> String {
+    build_manual(kind, config_dir, ManualAction::Relogin)
 }
 
 pub fn write_script(content: &str, kind: ScriptKind) -> std::io::Result<PathBuf> {
@@ -366,5 +456,221 @@ mod tests {
             r"C:\repo\app",
         );
         assert!(s.contains("GH_CONFIG_DIR = 'C:\\Users\\o''brien\\.claude\\gh'"));
+    }
+
+    // ---- manual fallback commands (S16-S19) ----
+
+    /// (raw, posix-escaped, powershell-escaped)
+    const HOSTILE: &[(&str, &str, &str)] = &[
+        ("it's", "it'\\''s", "it''s"),
+        ("say \"hi\"", "say \"hi\"", "say \"hi\""),
+        ("$HOME", "$HOME", "$HOME"),
+        ("a`b", "a`b", "a`b"),
+        ("a b", "a b", "a b"),
+    ];
+
+    #[test]
+    fn test_should_build_exact_posix_manual_commands_when_plain_paths() {
+        let cd = "/home/u/.claude-dino";
+        let env =
+            "CLAUDE_CONFIG_DIR='/home/u/.claude-dino' GH_CONFIG_DIR='/home/u/.claude-dino/gh'";
+        assert_eq!(
+            manual_command(ScriptKind::Posix, cd, "/repo"),
+            format!("cd '/repo' && {env} claude")
+        );
+        assert_eq!(
+            manual_login_command(ScriptKind::Posix, cd),
+            format!("{env} claude")
+        );
+        assert_eq!(
+            manual_logout_command(ScriptKind::Posix, cd),
+            format!("{env} claude auth logout")
+        );
+        assert_eq!(
+            manual_relogin_command(ScriptKind::Posix, cd),
+            format!("{env} claude auth logout; {env} claude auth login")
+        );
+    }
+
+    #[test]
+    fn test_should_build_exact_powershell_manual_commands_when_plain_paths() {
+        let cd = r"C:\Users\u\.claude-dino";
+        let env = r"$env:CLAUDE_CONFIG_DIR='C:\Users\u\.claude-dino'; $env:GH_CONFIG_DIR='C:\Users\u\.claude-dino\gh'";
+        assert_eq!(
+            manual_command(ScriptKind::PowerShell, cd, r"C:\repo"),
+            format!(r"{env}; Set-Location -LiteralPath 'C:\repo'; claude")
+        );
+        assert_eq!(
+            manual_login_command(ScriptKind::PowerShell, cd),
+            format!("{env}; claude")
+        );
+        assert_eq!(
+            manual_logout_command(ScriptKind::PowerShell, cd),
+            format!("{env}; claude auth logout")
+        );
+        assert_eq!(
+            manual_relogin_command(ScriptKind::PowerShell, cd),
+            format!("{env}; claude auth logout; claude auth login")
+        );
+    }
+
+    #[test]
+    fn test_should_escape_hostile_values_when_posix_manual_commands() {
+        for (raw, posix, _) in HOSTILE {
+            let cd = format!("/h/{raw}");
+            let pp = format!("/p/{raw}");
+            let env = format!("CLAUDE_CONFIG_DIR='/h/{posix}' GH_CONFIG_DIR='/h/{posix}/gh'");
+            assert_eq!(
+                manual_command(ScriptKind::Posix, &cd, &pp),
+                format!("cd '/p/{posix}' && {env} claude"),
+                "command for {raw:?}"
+            );
+            assert_eq!(
+                manual_login_command(ScriptKind::Posix, &cd),
+                format!("{env} claude"),
+                "login for {raw:?}"
+            );
+            assert_eq!(
+                manual_logout_command(ScriptKind::Posix, &cd),
+                format!("{env} claude auth logout"),
+                "logout for {raw:?}"
+            );
+            assert_eq!(
+                manual_relogin_command(ScriptKind::Posix, &cd),
+                format!("{env} claude auth logout; {env} claude auth login"),
+                "relogin for {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_escape_hostile_values_when_powershell_manual_commands() {
+        for (raw, _, ps) in HOSTILE {
+            let cd = format!(r"C:\h\{raw}");
+            let pp = format!(r"C:\p\{raw}");
+            let env =
+                format!(r"$env:CLAUDE_CONFIG_DIR='C:\h\{ps}'; $env:GH_CONFIG_DIR='C:\h\{ps}\gh'");
+            assert_eq!(
+                manual_command(ScriptKind::PowerShell, &cd, &pp),
+                format!(r"{env}; Set-Location -LiteralPath 'C:\p\{ps}'; claude"),
+                "command for {raw:?}"
+            );
+            assert_eq!(
+                manual_login_command(ScriptKind::PowerShell, &cd),
+                format!("{env}; claude"),
+                "login for {raw:?}"
+            );
+            assert_eq!(
+                manual_logout_command(ScriptKind::PowerShell, &cd),
+                format!("{env}; claude auth logout"),
+                "logout for {raw:?}"
+            );
+            assert_eq!(
+                manual_relogin_command(ScriptKind::PowerShell, &cd),
+                format!("{env}; claude auth logout; claude auth login"),
+                "relogin for {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_not_use_sh_c_when_building_posix_manual_command() {
+        let cmds = [
+            manual_command(ScriptKind::Posix, "/h/a\"b", "/p/$x"),
+            manual_login_command(ScriptKind::Posix, "/h/a"),
+            manual_logout_command(ScriptKind::Posix, "/h/a"),
+            manual_relogin_command(ScriptKind::Posix, "/h/a"),
+        ];
+        for c in cmds {
+            assert!(!c.contains("sh -c"), "nested sh -c in {c}");
+            assert!(!c.contains("exec"), "exec would kill the user's shell: {c}");
+        }
+    }
+
+    /// S19: run the built command through a real `sh` against a stub `claude`
+    /// and check the stub received the hostile cwd/env verbatim.
+    #[cfg(unix)]
+    mod round_trip {
+        use super::super::*;
+        use std::process::Command;
+
+        const HOSTILE_NAME: &str = "it's \"q\" $HOME `id` x";
+
+        /// Returns (tempdir guard, stub bin dir, output file, hostile project dir, hostile config dir).
+        fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+            let root = tempfile::tempdir().unwrap();
+            let base = root.path().canonicalize().unwrap();
+            let bin = base.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let stub = bin.join("claude");
+            std::fs::write(
+                &stub,
+                "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$(pwd -P)\" \"$CLAUDE_CONFIG_DIR\" \"$GH_CONFIG_DIR\" \"$*\" >> \"$OUT\"\n",
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let project = base.join(format!("proj {HOSTILE_NAME}"));
+            std::fs::create_dir_all(&project).unwrap();
+            let config = base.join(format!("cfg {HOSTILE_NAME}"));
+            let out = base.join("out.txt");
+            (root, bin, out, project, config)
+        }
+
+        fn run(cmd: &str, bin: &std::path::Path, out: &std::path::Path) -> Vec<String> {
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("OUT", out)
+                .current_dir("/")
+                .status()
+                .unwrap();
+            assert!(status.success(), "command failed: {cmd}");
+            std::fs::read_to_string(out)
+                .unwrap()
+                .lines()
+                .map(String::from)
+                .collect()
+        }
+
+        #[test]
+        fn test_should_deliver_hostile_cwd_and_env_when_running_manual_command_via_sh() {
+            let (_g, bin, out, project, config) = setup();
+            let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
+            let lines = run(&manual_command(ScriptKind::Posix, &cd, &pp), &bin, &out);
+            assert_eq!(
+                lines,
+                vec![format!("{pp}|{cd}|{cd}/gh|")],
+                "stub must see hostile cwd and env verbatim"
+            );
+        }
+
+        #[test]
+        fn test_should_deliver_env_to_both_commands_when_running_relogin_via_sh() {
+            let (_g, bin, out, _project, config) = setup();
+            let cd = config.to_string_lossy();
+            let lines = run(&manual_relogin_command(ScriptKind::Posix, &cd), &bin, &out);
+            // cwd is `/` (resolved by pwd -P), env present on BOTH invocations.
+            assert_eq!(
+                lines,
+                vec![
+                    format!("/|{cd}|{cd}/gh|auth logout"),
+                    format!("/|{cd}|{cd}/gh|auth login"),
+                ]
+            );
+        }
+
+        #[test]
+        fn test_should_deliver_env_when_running_login_and_logout_via_sh() {
+            let (_g, bin, out, _project, config) = setup();
+            let cd = config.to_string_lossy();
+            let l1 = run(&manual_login_command(ScriptKind::Posix, &cd), &bin, &out);
+            assert_eq!(l1, vec![format!("/|{cd}|{cd}/gh|")]);
+            let l2 = run(&manual_logout_command(ScriptKind::Posix, &cd), &bin, &out);
+            assert_eq!(l2[1], format!("/|{cd}|{cd}/gh|auth logout"));
+        }
     }
 }

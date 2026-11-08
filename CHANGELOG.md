@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Corrupt `config.json` is never overwritten**: a config that fails to parse
+  is copied to a backup next to it, left untouched, and the error is shown in
+  Preferences instead of silently resetting to the default `personal` account.
+- **Atomic config save**: `config.json` is written to a temp file and renamed,
+  so a crash mid-save can no longer truncate it.
+- **Preferences Save no longer reverts inherit decisions**: Skip/Merge choices
+  made in the Inheritance panel survive a later Save.
+- **Manual fallback commands are escaped per shell**: the clipboard commands
+  shown when the terminal can't be opened now quote paths for POSIX shells and
+  for PowerShell (including the per-account env vars), instead of always
+  assuming POSIX.
+- **Unreadable config is not treated as corrupt**: a permission or transient
+  I/O error while reading `config.json` is reported as such, without creating
+  a backup or suggesting to delete the file.
+- **Corrupt-config backups are private**: `config.json.corrupt-<ts>` is now
+  created with `0600` on Unix (it was `0644` while `config.json` is `0600`).
+- **Skip now un-inherits**: switching a subdir from Merge to Skip removes the
+  symlinks previously created into `~/.claude/<sub>` (only links pointing
+  there; the account's own files and foreign symlinks are untouched). Merge
+  also drops links whose source entry was deleted, and deleting a whole
+  `~/.claude/<sub>` directory prunes every link into it. Windows copy-fallback
+  entries can't be identified as inherited and are left in place.
+- **OS junk is never inherited**: `.DS_Store`, `Thumbs.db` and `desktop.ini`
+  are excluded from linking, from the Inheritance status and from conflict
+  detection (a Finder-made `.DS_Store` no longer counts as account content).
+  Links created earlier are cleaned up on the next launch.
+- **Two accounts can no longer share a config dir**: Preferences marks the
+  duplicated suffixes (case- and trailing-slash-insensitive) and disables
+  Save, and `save_config` rejects such a config server-side with an error
+  naming both accounts.
+
+### Changed
+
+- `config.json` is saved with `0600` permissions on Unix.
+- CI: clippy and the test suite now also run on macOS and Windows, and gate the
+  release builds.
+
 ## [0.6.0] — 2026-09-15
 
 ### Added

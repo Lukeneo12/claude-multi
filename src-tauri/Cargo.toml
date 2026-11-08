@@ -5,6 +5,9 @@ description = "Cross-OS system-tray app to run Claude Code under multiple isolat
 authors = ["Lucas Donadio"]
 license = "MIT"
 edition = "2021"
+# Two binaries: without this, `cargo run` (and so `npm run tauri dev`) can't
+# pick one and fails. It also pins the Tauri bundler to the app binary.
+default-run = "claude-multi"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

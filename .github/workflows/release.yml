@@ -1,7 +1,8 @@
 name: Release
 
 # Trigger on a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
-# The `quality` job (lint + tests + dependency audits) must pass before any
+# The `quality` job (lint + tests + dependency audits) and the `cross-os`
+# job (clippy + tests on macOS and Windows) must pass before any
 # platform is built and uploaded to the GitHub Release.
 on:
   push:
@@ -76,13 +77,59 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+  # Clippy + tests on the platforms the app ships for besides Linux. Most of
+  # the OS-specific code (`#[cfg(windows)]`, Keychain, PowerShell builders) is
+  # invisible to the Ubuntu job. Audits and rustfmt stay in `quality`.
+  cross-os:
+    name: Clippy & test (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # tauri::generate_context! needs ../dist to exist at compile time.
+      - name: Build frontend (tsc + vite)
+        run: npm run build
+
+      - name: Clippy (deny warnings)
+        shell: bash
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust tests
+        shell: bash
+        working-directory: src-tauri
+        run: cargo test
+
   # One release object, created before any platform builds. Letting each
   # matrix job create its own release races: in v0.6.0 four concurrent jobs
   # produced two drafts for the same tag, splitting the nine installers
   # across them. The build job below uploads into this id instead.
   create-release:
     name: Create draft release
-    needs: quality
+    needs: [quality, cross-os]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     permissions:
@@ -112,7 +159,7 @@ jobs:
 
   release:
     name: Build & release (${{ matrix.platform }} ${{ matrix.args }})
-    needs: [quality, create-release]
+    needs: [quality, cross-os, create-release]
     # Only build/publish on a version tag. A manual workflow_dispatch from a
     # branch runs just the `quality` gate (no bogus release is created).
     if: startsWith(github.ref, 'refs/tags/v')

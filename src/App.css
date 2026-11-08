@@ -158,6 +158,12 @@ body {
   background: transparent;
 }
 .affix__input:focus { box-shadow: none; }
+.affix--invalid,
+.affix--invalid:focus-within {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.field-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
 
 .btn {
   height: 32px;

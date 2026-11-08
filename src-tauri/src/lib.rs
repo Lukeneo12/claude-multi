@@ -33,8 +33,13 @@ pub fn run() {
             commands::set_inherit_decision,
         ])
         .setup(|app| {
-            tray::build_tray(app)?;
             use tauri::{Manager, WindowEvent};
+            // Registered before the tray exists: tray events call commands that
+            // resolve the store via `app.state`.
+            app.manage(config::ConfigStore::new(paths::config_file_path(
+                app.handle(),
+            )));
+            tray::build_tray(app)?;
             if let Some(win) = app.get_webview_window("main") {
                 let win_for_event = win.clone();
                 win.on_window_event(move |event| {

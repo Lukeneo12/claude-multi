@@ -157,6 +157,8 @@ fn build_menu(
         .build()
 }
 
+// Lenient `Config::load` below is intentional: the tray renders on every hover
+// and must never write (no backups) or lock; mutating paths use `ConfigStore`.
 pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::{TrayIconBuilder, TrayIconEvent};
     let cfg = Config::load(&paths::config_file_path(app.handle()));

@@ -1,7 +1,7 @@
 use crate::config::InheritDecision;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// User-level subdirs of `~/.claude` inherited into each account's config dir,
 /// in the order they are processed.
@@ -20,12 +20,24 @@ pub const INHERITED_SUBDIRS: &[&str] = &["agents", "commands", "skills", "output
 /// into `~/.claude`. An existing dest file always wins (no overwrite, no merge).
 pub const SEEDED_FILES: &[&str] = &["settings.json"];
 
+/// OS-generated files never inherited (and never counted as account content).
+pub const OS_JUNK: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+
+/// True for names in `OS_JUNK`.
+/// Case-insensitive: Windows/macOS default filesystems are.
+pub fn is_os_junk(name: &str) -> bool {
+    OS_JUNK.iter().any(|j| j.eq_ignore_ascii_case(name))
+}
+
 /// One entry observed in an account's subdir during planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestEntry {
     pub name: String,
     /// True if the entry is a symlink (created by us); false = account-owned.
     pub is_symlink: bool,
+    /// Absolute target of the symlink (relative targets resolved against the
+    /// dest subdir); `None` for non-symlinks or an unreadable link.
+    pub link_target: Option<PathBuf>,
 }
 
 /// A single symlink to create, by entry name.
@@ -57,7 +69,7 @@ pub fn subdir_status(
     source_entries: &[String],
     dest_entries: &[DestEntry],
 ) -> InheritStatus {
-    if source_entries.is_empty() {
+    if source_entries.iter().all(|n| is_os_junk(n)) {
         return InheritStatus::None;
     }
     match decision {
@@ -94,16 +106,67 @@ pub fn plan_links(source_entries: &[String], dest_entries: &[DestEntry]) -> Vec<
     let existing: HashSet<&str> = dest_entries.iter().map(|e| e.name.as_str()).collect();
     let mut out: Vec<LinkAction> = source_entries
         .iter()
-        .filter(|n| !existing.contains(n.as_str()))
+        .filter(|n| !is_os_junk(n) && !existing.contains(n.as_str()))
         .map(|n| LinkAction { name: n.clone() })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
-/// True if the dest has any real (non-symlink) entry — i.e. account-owned content.
+/// Name of the `src_sub` entry a link target points at, or `None` when the
+/// target is not (lexically) inside `src_sub`. Targets with `..` components are
+/// rejected so `<src_sub>/../x` can never be mistaken for an inherited link.
+fn inherited_source_name<'a>(target: &'a Path, src_sub: &Path) -> Option<&'a str> {
+    let rel = target.strip_prefix(src_sub).ok()?;
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    match rel.components().next()? {
+        Component::Normal(name) => name.to_str(),
+        _ => None,
+    }
+}
+
+/// Names of dest entries to remove because they are stale inherited links.
+///
+/// An entry is ours to remove ONLY if it is a symlink whose target lies inside
+/// `src_sub` (the `~/.claude/<sub>` we link from). Regular files/dirs
+/// (account-owned) and symlinks pointing elsewhere are never listed. With
+/// `prune_all` (Skip) every such link goes; otherwise (Merge) only links whose
+/// source entry is no longer in `source_entries` (deleted upstream).
+///
+/// Limitation: the Windows copy fallback produces real copies, which cannot be
+/// told apart from account-owned entries, so they are never pruned.
+pub fn plan_prune(
+    src_sub: &Path,
+    source_entries: &[String],
+    dest_entries: &[DestEntry],
+    prune_all: bool,
+) -> Vec<String> {
+    // Junk is never planned, so existing junk links count as stale.
+    let planned: HashSet<&str> = source_entries
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !is_os_junk(n))
+        .collect();
+    let mut out: Vec<String> = dest_entries
+        .iter()
+        .filter(|e| e.is_symlink)
+        .filter_map(|e| {
+            let name = inherited_source_name(e.link_target.as_deref()?, src_sub)?;
+            (prune_all || !planned.contains(name)).then(|| e.name.clone())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// True if the dest has any real (non-symlink) entry — i.e. account-owned
+/// content. OS junk (e.g. a Finder-made `.DS_Store`) is not account content.
 pub fn has_conflict(dest_entries: &[DestEntry]) -> bool {
-    dest_entries.iter().any(|e| !e.is_symlink)
+    dest_entries
+        .iter()
+        .any(|e| !e.is_symlink && !is_os_junk(&e.name))
 }
 
 /// Resolve what to do for one subdir from its persisted decision and current state.
@@ -187,16 +250,23 @@ pub fn ensure_inherited(
     let mut needs_prompt = Vec::new();
     for sub in INHERITED_SUBDIRS {
         let src_sub = source.join(sub);
-        if !src_sub.is_dir() {
-            continue; // nothing to inherit from this subdir
-        }
         let dest_sub = config_dir.join(sub);
+        if !src_sub.is_dir() {
+            // Nothing to inherit; links into the now-missing subdir are
+            // dangling by definition, so prune them (own files untouched).
+            let dest_entries = read_dest_entries(&dest_sub)?;
+            prune_links(&src_sub, &dest_sub, &[], &dest_entries, true)?;
+            continue;
+        }
         let source_entries = read_entry_names(&src_sub)?;
         let dest_entries = read_dest_entries(&dest_sub)?;
         match resolve_subdir(decisions.get(*sub), &source_entries, &dest_entries) {
-            SubdirPlan::Skip => {}
+            SubdirPlan::Skip => {
+                prune_links(&src_sub, &dest_sub, &source_entries, &dest_entries, true)?;
+            }
             SubdirPlan::NeedsPrompt => needs_prompt.push((*sub).to_string()),
             SubdirPlan::Link(actions) => {
+                prune_links(&src_sub, &dest_sub, &source_entries, &dest_entries, false)?;
                 if !actions.is_empty() {
                     std::fs::create_dir_all(&dest_sub)?;
                     for a in actions {
@@ -207,6 +277,44 @@ pub fn ensure_inherited(
         }
     }
     Ok(InheritOutcome { needs_prompt })
+}
+
+/// Remove the stale inherited links planned by `plan_prune`. Removes the link
+/// itself, never what it points at (nothing inside `src_sub` is ever written).
+fn prune_links(
+    src_sub: &Path,
+    dest_sub: &Path,
+    source_entries: &[String],
+    dest_entries: &[DestEntry],
+    prune_all: bool,
+) -> std::io::Result<()> {
+    for name in plan_prune(src_sub, source_entries, dest_entries, prune_all) {
+        remove_link(&dest_sub.join(name))?;
+    }
+    Ok(())
+}
+
+/// Removes one planned link. Re-checks that `path` is still a symlink right
+/// before unlinking: if a real file took its place between planning and
+/// removal, it is account-owned content and is left alone.
+fn remove_link(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => remove_symlink(path),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+/// Directory symlinks on Windows must be removed with `remove_dir`.
+#[cfg(windows)]
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path))
 }
 
 /// Result of one launch-time `seed_and_apply` pass.
@@ -302,7 +410,22 @@ fn read_dest_entries(dir: &Path) -> std::io::Result<Vec<DestEntry>> {
                     None => continue,
                 };
                 let is_symlink = entry.file_type()?.is_symlink();
-                entries.push(DestEntry { name, is_symlink });
+                let link_target = if is_symlink {
+                    std::fs::read_link(entry.path()).ok().map(|t| {
+                        if t.is_absolute() {
+                            t
+                        } else {
+                            dir.join(t)
+                        }
+                    })
+                } else {
+                    None
+                };
+                entries.push(DestEntry {
+                    name,
+                    is_symlink,
+                    link_target,
+                });
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -359,7 +482,103 @@ mod core_tests {
         DestEntry {
             name: name.to_string(),
             is_symlink,
+            link_target: None,
         }
+    }
+
+    /// A symlink entry pointing at `target`.
+    fn link(name: &str, target: &str) -> DestEntry {
+        DestEntry {
+            name: name.to_string(),
+            is_symlink: true,
+            link_target: Some(PathBuf::from(target)),
+        }
+    }
+
+    fn pruned(src_sub: &str, src: &[&str], dst: &[DestEntry], all: bool) -> Vec<String> {
+        let src: Vec<String> = src.iter().map(|s| s.to_string()).collect();
+        plan_prune(Path::new(src_sub), &src, dst, all)
+    }
+
+    #[test]
+    fn test_should_not_plan_links_for_os_junk() {
+        let src: Vec<String> = [".DS_Store", "Thumbs.db", "desktop.ini", "a.md"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let names: Vec<_> = plan_links(&src, &[]).into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["a.md"]);
+    }
+
+    #[test]
+    fn test_should_not_report_conflict_when_dest_only_has_os_junk_files() {
+        // Finder drops .DS_Store into the account dir; that is not account content.
+        assert!(!has_conflict(&[dest(".DS_Store", false)]));
+        assert!(has_conflict(&[
+            dest(".DS_Store", false),
+            dest("own.md", false)
+        ]));
+    }
+
+    #[test]
+    fn test_should_report_none_status_when_source_has_only_os_junk() {
+        let src = vec![".DS_Store".to_string()];
+        assert_eq!(subdir_status(None, &src, &[]), InheritStatus::None);
+    }
+
+    #[test]
+    fn test_should_prune_os_junk_link_when_merge() {
+        let dst = vec![
+            link(".DS_Store", "/h/.claude/agents/.DS_Store"),
+            link("a.md", "/h/.claude/agents/a.md"),
+        ];
+        // .DS_Store still exists in the source, but is never planned.
+        assert_eq!(
+            pruned("/h/.claude/agents", &[".DS_Store", "a.md"], &dst, false),
+            vec![".DS_Store"]
+        );
+    }
+
+    #[test]
+    fn test_should_prune_only_links_into_source_when_skip() {
+        let dst = vec![
+            link("a.md", "/h/.claude/agents/a.md"),
+            link("dangling.md", "/h/.claude/agents/gone.md"),
+            link("foreign.md", "/elsewhere/foreign.md"),
+            link("sneaky.md", "/h/.claude/agents/../secret.md"),
+            dest("own.md", false),
+        ];
+        assert_eq!(
+            pruned("/h/.claude/agents", &["a.md"], &dst, true),
+            vec!["a.md", "dangling.md"]
+        );
+    }
+
+    #[test]
+    fn test_should_never_prune_links_into_a_sibling_prefix_dir() {
+        // `agents-extra` shares a string prefix with `agents` but is not inside it.
+        let dst = vec![link("x.md", "/h/.claude/agents-extra/x.md")];
+        assert!(pruned("/h/.claude/agents", &[], &dst, true).is_empty());
+    }
+
+    #[test]
+    fn test_should_prune_link_whose_source_entry_vanished_when_merge() {
+        let dst = vec![
+            link("kept.md", "/h/.claude/agents/kept.md"),
+            link("old.md", "/h/.claude/agents/old.md"),
+            link("foreign.md", "/elsewhere/foreign.md"),
+            dest("own.md", false),
+        ];
+        assert_eq!(
+            pruned("/h/.claude/agents", &["kept.md"], &dst, false),
+            vec!["old.md"]
+        );
+    }
+
+    #[test]
+    fn test_should_not_prune_links_without_readable_target() {
+        let dst = vec![dest("l.md", true)]; // symlink, target unknown
+        assert!(pruned("/h/.claude/agents", &[], &dst, true).is_empty());
     }
 
     #[test]
@@ -630,6 +849,121 @@ mod io_tests {
         walk(root, root, &mut out);
         out.sort();
         out
+    }
+
+    fn is_link(p: &std::path::Path) -> bool {
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn decide(sub: &str, d: InheritDecision) -> HashMap<String, InheritDecision> {
+        HashMap::from([(sub.to_string(), d)])
+    }
+
+    #[test]
+    fn test_should_remove_inherited_links_when_merge_is_switched_to_skip() {
+        let (source, cfg) = fixture("skip_after_merge");
+        touch(&source.join("skills").join("a.md"));
+        touch(&source.join("skills").join("b.md"));
+        touch(&cfg.join("skills").join("own.md"));
+        ensure_inherited(&source, &cfg, &decide("skills", InheritDecision::Merge)).unwrap();
+        assert!(is_link(&cfg.join("skills").join("a.md")));
+        // A symlink to somewhere else: not ours, must survive.
+        let foreign = cfg.join("foreign-target.md");
+        touch(&foreign);
+        symlink(&foreign, cfg.join("skills").join("foreign.md")).unwrap();
+
+        ensure_inherited(&source, &cfg, &decide("skills", InheritDecision::Skip)).unwrap();
+
+        assert!(!is_link(&cfg.join("skills").join("a.md")));
+        assert!(!is_link(&cfg.join("skills").join("b.md")));
+        assert!(cfg.join("skills").join("own.md").is_file()); // account-owned kept
+        assert!(is_link(&cfg.join("skills").join("foreign.md"))); // foreign kept
+                                                                  // Pruning removes the link only, never its target inside the source.
+        assert!(source.join("skills").join("a.md").is_file());
+        assert!(source.join("skills").join("b.md").is_file());
+    }
+
+    #[test]
+    fn test_should_never_inherit_and_should_clean_existing_os_junk_links() {
+        let (source, cfg) = fixture("os_junk");
+        touch(&source.join("agents").join("a.md"));
+        touch(&source.join("agents").join(".DS_Store"));
+        // Pre-existing junk link from before the deny-list, plus a Finder-made
+        // real junk file in an account that otherwise has no own content.
+        std::fs::create_dir_all(cfg.join("agents")).unwrap();
+        symlink(
+            source.join("agents").join(".DS_Store"),
+            cfg.join("agents").join(".DS_Store"),
+        )
+        .unwrap();
+
+        let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
+
+        assert!(out.needs_prompt.is_empty());
+        assert!(!is_link(&cfg.join("agents").join(".DS_Store"))); // cleaned
+        assert!(is_link(&cfg.join("agents").join("a.md")));
+        assert!(source.join("agents").join(".DS_Store").is_file()); // source intact
+    }
+
+    #[test]
+    fn test_should_not_prompt_when_dest_only_has_real_os_junk() {
+        let (source, cfg) = fixture("os_junk_real");
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join(".DS_Store"));
+        let out = ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
+        assert!(out.needs_prompt.is_empty());
+        assert!(is_link(&cfg.join("agents").join("a.md")));
+        assert!(cfg.join("agents").join(".DS_Store").is_file()); // never removed
+    }
+
+    #[test]
+    fn test_should_prune_link_when_source_entry_deleted_under_merge() {
+        let (source, cfg) = fixture("merge_prune_vanished");
+        touch(&source.join("agents").join("a.md"));
+        touch(&source.join("agents").join("b.md"));
+        ensure_inherited(&source, &cfg, &HashMap::new()).unwrap();
+        std::fs::remove_file(source.join("agents").join("b.md")).unwrap();
+
+        ensure_inherited(&source, &cfg, &decide("agents", InheritDecision::Merge)).unwrap();
+
+        assert!(is_link(&cfg.join("agents").join("a.md")));
+        assert!(!is_link(&cfg.join("agents").join("b.md"))); // dangling link gone
+    }
+
+    #[test]
+    fn test_should_prune_dangling_links_when_source_subdir_deleted() {
+        let (source, cfg) = fixture("source_subdir_deleted");
+        touch(&source.join("agents").join("a.md"));
+        touch(&cfg.join("agents").join("own.md"));
+        ensure_inherited(&source, &cfg, &decide("agents", InheritDecision::Merge)).unwrap();
+        assert!(is_link(&cfg.join("agents").join("a.md")));
+        let foreign = cfg.join("foreign-target.md");
+        touch(&foreign);
+        symlink(&foreign, cfg.join("agents").join("foreign.md")).unwrap();
+        std::fs::remove_dir_all(source.join("agents")).unwrap();
+
+        let out =
+            ensure_inherited(&source, &cfg, &decide("agents", InheritDecision::Merge)).unwrap();
+
+        assert!(out.needs_prompt.is_empty());
+        assert!(!is_link(&cfg.join("agents").join("a.md"))); // dangling link gone
+        assert!(cfg.join("agents").join("own.md").is_file()); // account-owned kept
+        assert!(is_link(&cfg.join("agents").join("foreign.md"))); // foreign kept
+    }
+
+    #[test]
+    fn test_should_leave_regular_file_in_place_when_remove_link_finds_no_symlink() {
+        let (_source, cfg) = fixture("remove_link_guard");
+        // A real file that appeared where a link was planned (plan/removal race).
+        let own = cfg.join("agents").join("own.md");
+        touch(&own);
+        remove_link(&own).unwrap();
+        assert!(
+            own.is_file(),
+            "remove_link must never delete account-owned content"
+        );
     }
 
     #[test]

@@ -166,11 +166,11 @@ In **Preferences…**, choose which terminal opens for sessions and logins.
 
 | OS | Available |
 |---|---|
-| macOS | Terminal.app, iTerm2, Warp (verify — see below) |
+| macOS | Terminal.app, iTerm2, Warp |
 | Linux | GNOME Terminal, Konsole |
 | Windows | Windows Terminal, PowerShell |
 
-**Warp note**: the Warp adapter (`open -a Warp <script>`) is included but unverified — confirm Warp runs the script rather than opening it as text; otherwise use Terminal.app/iTerm2. See `docs/SMOKE-CHECKLIST.md`.
+**Warp note**: the Warp adapter (`open -a Warp <script>`) is verified — Warp runs the script in a new tab. See `docs/SMOKE-CHECKLIST.md`.
 
 ---
 
@@ -184,7 +184,7 @@ Config is stored as `config.json` in the Tauri app-config directory:
 
 You can edit it directly; the tray reflects changes on the next save (from Preferences) or hover.
 
-If the configured terminal can't be opened, the app copies a manual command to the clipboard so you can paste and run it yourself.
+If the configured terminal can't be opened, the app copies a manual command to the clipboard so you can paste and run it yourself. On Windows the PowerShell variant sets `$env:CLAUDE_CONFIG_DIR` (and the other per-account variables) in your current session, so a later `claude` in that same window keeps using that account until you close it or clear the variable.
 
 ---
 
@@ -200,7 +200,7 @@ If the configured terminal can't be opened, the app copies a manual command to t
 
 ```sh
 cd src-tauri
-cargo test                              # 27 unit tests
+cargo test                              # unit tests
 cargo clippy --all-targets -- -D warnings
 ```
 
@@ -252,6 +252,5 @@ Useful flags: `--bundles app|dmg|deb|…` to pick targets; `--target universal-a
 
 ## Known caveats
 
-- **Warp adapter unverified** (see above).
 - **Linux hover-refresh**: the tray doesn't refresh on hover on Linux (no tray hover events); it still refreshes on save.
 - **Distribution**: builds are unsigned (see "Build a distributable"); each OS builds its own bundle.
