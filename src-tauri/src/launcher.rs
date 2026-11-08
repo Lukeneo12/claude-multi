@@ -837,12 +837,27 @@ mod tests {
                 .collect()
         }
 
+        /// Asserts the stub ran exactly once, inside `project`, with the env
+        /// verbatim. The cwd is compared by filesystem identity: the runner's
+        /// temp dir may be an 8.3 short name (`RUNNER~1`) that `Get-Location`
+        /// reports in long form (`runneradmin`) after `Set-Location`.
+        fn assert_ran_in_project(lines: &[String], project: &Path, cd: &str) {
+            assert_eq!(lines.len(), 1, "stub should run once: {lines:?}");
+            let (cwd, env) = lines[0].split_once('|').unwrap();
+            assert_eq!(
+                std::fs::canonicalize(cwd).unwrap(),
+                std::fs::canonicalize(project).unwrap(),
+                "stub ran in the wrong dir: {cwd}"
+            );
+            assert_eq!(env, format!("{cd}|{cd}\\gh|"));
+        }
+
         #[test]
         fn test_should_deliver_hostile_cwd_and_env_when_running_launch_script_via_powershell() {
             let (_g, bin, out, project, config) = setup();
             let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
             let lines = run(&build_script(ScriptKind::PowerShell, &cd, &pp), &bin, &out);
-            assert_eq!(lines, vec![format!("{pp}|{cd}|{cd}\\gh|")]);
+            assert_ran_in_project(&lines, &project, &cd);
         }
 
         #[test]
@@ -875,7 +890,7 @@ mod tests {
                 &bin,
                 &out,
             );
-            assert_eq!(lines, vec![format!("{pp}|{cd}|{cd}\\gh|")]);
+            assert_ran_in_project(&lines, &project, &cd);
         }
     }
 }
