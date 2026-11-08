@@ -170,8 +170,9 @@ pub fn launch_session(
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &pp).map_err(|e| {
         let _ = app.clipboard().write_text(launcher::manual_command(adapter.kind, &cd, &pp));
         format!(
-            "Couldn't open terminal '{}' ({e}). The launch command was copied to your clipboard — paste it into any terminal.",
-            adapter.id
+            "Couldn't open terminal '{}' ({e}). The launch command was copied to your clipboard — paste it into {}.",
+            adapter.id,
+            launcher::manual_paste_hint(adapter.kind)
         )
     })
 }
@@ -252,8 +253,9 @@ fn run_account_action(
     adapters::spawn(&adapter, &script_path.to_string_lossy(), &cd).map_err(|e| {
         let _ = app.clipboard().write_text(fallback);
         format!(
-            "Couldn't open terminal '{}' for {what} ({e}). The command was copied to your clipboard — paste it into any terminal.",
-            adapter.id
+            "Couldn't open terminal '{}' for {what} ({e}). The command was copied to your clipboard — paste it into {}.",
+            adapter.id,
+            launcher::manual_paste_hint(adapter.kind)
         )
     })
 }

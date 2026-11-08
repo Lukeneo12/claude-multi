@@ -121,7 +121,11 @@ See "Warp Adapter Decision" below.
 - Config dirs: `%USERPROFILE%\.claude-personal`, etc.; default terminal Windows Terminal
   (`wt`), scripts are `.ps1`. Verify `$env:CLAUDE_CONFIG_DIR` in the PowerShell session.
 - Hover-refresh applies (Windows emits tray events).
-- Clipboard fallback contains the PowerShell-shaped command.
+- Clipboard fallback contains the PowerShell-shaped command, and the error
+  message says to paste it into a PowerShell window.
+- **Default execution policy:** on a machine where `Get-ExecutionPolicy` prints
+  `Restricted` (the stock Windows client default), launching a session opens
+  Claude, with no "running scripts is disabled on this system" error.
 
 ---
 
