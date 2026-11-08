@@ -52,7 +52,7 @@ Frontend (`src/`): `api.ts` (typed `invoke` wrappers + types), `App.tsx` (Prefer
   dirs from config. `Project.account` and `Account.config_dir` flow through
   `expand_tilde`.
 - **Config writes go through `ConfigStore::update`** (read-modify-write under one lock, atomic save). Never hold the lock across a blocking dialog or terminal spawn: do the I/O, then take the lock for the short update.
-- **Shell-escape** every `config_dir`/`project_path` interpolated into scripts (POSIX `'\''`, PowerShell `''`). Adding a new script builder means adding escaping + a test.
+- **Shell-escape** every `config_dir`/`project_path` interpolated into scripts (POSIX `'\''`, PowerShell: double every single-quote delimiter, ASCII `'` **and** typographic `‘` `’` `‚` `‛`, via `powershell_single_quote_escape`). PowerShell paths go through `-LiteralPath`, and `.ps1` files are written with a UTF-8 BOM (`powershell.exe` 5.1 reads BOM-less scripts as ANSI). Adding a new script builder means adding escaping + a test.
 - **Temp scripts**: atomic create, restrictive perms, unguessable name (use the `tempfile` path in `write_script`).
 - **GUI PATH**: the app process lacks the user's shell `PATH` (no `~/.local/bin`), so `claude` is invoked **through the terminal adapter**, never via a bare `Command::new("claude")`.
 

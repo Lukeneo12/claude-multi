@@ -19,6 +19,12 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shown when the terminal can't be opened now quote paths for POSIX shells and
   for PowerShell (including the per-account env vars), instead of always
   assuming POSIX.
+- **Windows paths with special characters launch correctly**: PowerShell
+  scripts are written with a UTF-8 BOM (Windows PowerShell 5.1 read them as
+  ANSI, mangling non-ASCII paths such as `José`), typographic quotes (`‘` `’`
+  `‚` `‛`, which PowerShell also treats as string delimiters) are escaped in
+  scripts and manual commands, and `Set-Location -LiteralPath` keeps `[` `]`
+  in project paths from being read as wildcards.
 - **Unreadable config is not treated as corrupt**: a permission or transient
   I/O error while reading `config.json` is reported as such, without creating
   a backup or suggesting to delete the file.
