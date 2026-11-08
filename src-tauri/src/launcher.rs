@@ -14,11 +14,30 @@ fn posix_single_quote_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-/// Escapes single quotes for PowerShell single-quoted strings.
-/// Each `'` in the value becomes `''` (doubled single quote).
+/// Every char PowerShell's tokenizer treats as a single-quote delimiter: the
+/// ASCII `'` plus the typographic `‘` `’` `‚` `‛`.
+const POWERSHELL_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// Escapes a value for a PowerShell single-quoted string by doubling every
+/// single-quote delimiter (each doubled char is read back as itself), the same
+/// rule as PowerShell's own `EscapeSingleQuotedStringContent`. `$` and the
+/// backtick are literal inside `'…'`, so nothing else needs escaping.
 fn powershell_single_quote_escape(s: &str) -> String {
-    s.replace('\'', "''")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if POWERSHELL_SINGLE_QUOTES.contains(&c) {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out
 }
+
+/// UTF-8 byte-order mark. Windows PowerShell 5.1 (`powershell.exe`, what the
+/// adapters launch) decodes a BOM-less `.ps1` with the ANSI code page, which
+/// mangles non-ASCII paths and can even turn a UTF-8 continuation byte into a
+/// quote (`đ` is `C4 91`; `0x91` is `‘` in cp1252).
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// Other tools whose global state must be isolated per account, the same way
 /// `CLAUDE_CONFIG_DIR` isolates Claude Code's. Each entry is `(ENV_VAR, subdir)`;
@@ -71,7 +90,7 @@ pub fn build_script(kind: ScriptKind, config_dir: &str, project_path: &str) -> S
             let escaped_config = powershell_single_quote_escape(config_dir);
             let escaped_project = powershell_single_quote_escape(project_path);
             format!(
-                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\n{extra_env}Set-Location '{escaped_project}'\nclaude\n"
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\n{extra_env}Set-Location -LiteralPath '{escaped_project}'\nclaude\n"
             )
         }
     }
@@ -229,6 +248,9 @@ pub fn write_script(content: &str, kind: ScriptKind) -> std::io::Result<PathBuf>
     let mut builder = tempfile::Builder::new();
     builder.prefix("claude-multi-").suffix(&suffix);
     let mut f = builder.tempfile()?; // random name, 0600 on unix, atomic create_new
+    if let ScriptKind::PowerShell = kind {
+        f.write_all(UTF8_BOM)?;
+    }
     f.write_all(content.as_bytes())?;
     f.flush()?;
     #[cfg(unix)]
@@ -261,7 +283,7 @@ mod tests {
             r"C:\repo\app",
         );
         assert!(s.contains(r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\u\.claude-dino'"));
-        assert!(s.contains(r"Set-Location 'C:\repo\app'"));
+        assert!(s.contains(r"Set-Location -LiteralPath 'C:\repo\app'"));
         assert!(s.contains("claude"));
     }
 
@@ -286,7 +308,77 @@ mod tests {
             r"C:\Users\u\.claude",
             r"C:\Users\o'brien\repo",
         );
-        assert!(s.contains("Set-Location 'C:\\Users\\o''brien\\repo'"));
+        assert!(s.contains("Set-Location -LiteralPath 'C:\\Users\\o''brien\\repo'"));
+    }
+
+    #[test]
+    fn test_should_double_every_powershell_single_quote_char_when_escaping() {
+        assert_eq!(
+            powershell_single_quote_escape("a'b\u{2018}c\u{2019}d\u{201A}e\u{201B}f"),
+            "a''b\u{2018}\u{2018}c\u{2019}\u{2019}d\u{201A}\u{201A}e\u{201B}\u{201B}f"
+        );
+    }
+
+    #[test]
+    fn test_should_leave_double_and_other_quotes_alone_when_escaping_powershell() {
+        // Only single-quote delimiters matter inside a '…' string.
+        let s = "\"\u{201C}\u{201D}`$x";
+        assert_eq!(powershell_single_quote_escape(s), s);
+    }
+
+    #[test]
+    fn test_should_escape_typographic_quotes_in_every_powershell_script() {
+        let cd = "C:\\h\\o\u{2019}brien";
+        let esc = "C:\\h\\o\u{2019}\u{2019}brien";
+        let pp = "C:\\p\\\u{2018}x\u{2019}";
+        let scripts = [
+            build_script(ScriptKind::PowerShell, cd, pp),
+            build_login_script(ScriptKind::PowerShell, cd),
+            build_logout_script(ScriptKind::PowerShell, cd),
+            build_relogin_script(ScriptKind::PowerShell, cd),
+        ];
+        for s in &scripts {
+            assert!(
+                s.contains(&format!("$env:CLAUDE_CONFIG_DIR = '{esc}'")),
+                "{s}"
+            );
+            assert!(
+                s.contains(&format!("$env:GH_CONFIG_DIR = '{esc}\\gh'")),
+                "{s}"
+            );
+        }
+        assert!(scripts[0]
+            .contains("Set-Location -LiteralPath 'C:\\p\\\u{2018}\u{2018}x\u{2019}\u{2019}'"));
+    }
+
+    #[test]
+    fn test_should_use_literal_path_when_powershell_project_has_wildcards() {
+        let s = build_script(ScriptKind::PowerShell, r"C:\h", r"C:\repo [v2]");
+        assert!(
+            s.contains(r"Set-Location -LiteralPath 'C:\repo [v2]'"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn test_should_prefix_utf8_bom_when_writing_powershell_script() {
+        let path = write_script("Write-Host 'Jos\u{e9}'\n", ScriptKind::PowerShell).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            &bytes[..3],
+            b"\xEF\xBB\xBF",
+            "Windows PowerShell 5.1 reads BOM-less .ps1 as ANSI"
+        );
+        assert_eq!(&bytes[3..], "Write-Host 'Jos\u{e9}'\n".as_bytes());
+    }
+
+    #[test]
+    fn test_should_not_prefix_bom_when_writing_posix_script() {
+        let path = write_script("#!/bin/sh\n", ScriptKind::Posix).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(bytes, b"#!/bin/sh\n", "a BOM before the shebang breaks sh");
     }
 
     #[test]
@@ -398,7 +490,7 @@ mod tests {
         );
         let claude_line = s.find("CLAUDE_CONFIG_DIR").unwrap();
         let gh_line = s.find("GH_CONFIG_DIR").unwrap();
-        let set_location_line = s.find("Set-Location '").unwrap();
+        let set_location_line = s.find("Set-Location -LiteralPath '").unwrap();
         assert!(
             claude_line < gh_line && gh_line < set_location_line,
             "GH_CONFIG_DIR must be exported after CLAUDE_CONFIG_DIR and before Set-Location"
@@ -467,6 +559,13 @@ mod tests {
         ("$HOME", "$HOME", "$HOME"),
         ("a`b", "a`b", "a`b"),
         ("a b", "a b", "a b"),
+        // PowerShell also closes single-quoted strings on typographic quotes.
+        ("o\u{2019}brien", "o\u{2019}brien", "o\u{2019}\u{2019}brien"),
+        (
+            "\u{2018}x\u{201B}\u{201A}",
+            "\u{2018}x\u{201B}\u{201A}",
+            "\u{2018}\u{2018}x\u{201B}\u{201B}\u{201A}\u{201A}",
+        ),
     ];
 
     #[test]
@@ -671,6 +770,127 @@ mod tests {
             assert_eq!(l1, vec![format!("/|{cd}|{cd}/gh|")]);
             let l2 = run(&manual_logout_command(ScriptKind::Posix, &cd), &bin, &out);
             assert_eq!(l2[1], format!("/|{cd}|{cd}/gh|auth logout"));
+        }
+    }
+
+    /// Windows counterpart of `round_trip`: runs the generated `.ps1` scripts
+    /// and manual commands through the real `powershell.exe` (Windows
+    /// PowerShell 5.1, what the adapters launch) against a stub `claude`, and
+    /// checks the stub received the hostile cwd/env verbatim. The name mixes
+    /// typographic quotes, `$`/backtick, wildcard brackets and `đ` (UTF-8
+    /// `C4 91`; `0x91` is `‘` in cp1252, so a BOM-less script breaks out of
+    /// its string).
+    #[cfg(windows)]
+    mod powershell_round_trip {
+        use super::super::*;
+        use std::path::Path;
+        use std::process::Command;
+
+        const HOSTILE_NAME: &str =
+            "it's \u{2018}q\u{2019} \u{201A}x\u{201B} $HOME `id` [v2] \u{111} \u{fc}";
+
+        const STUB: &str = "$line = (Get-Location).Path + '|' + $env:CLAUDE_CONFIG_DIR + '|' + $env:GH_CONFIG_DIR + '|' + ($args -join ' ')\r\n[IO.File]::AppendAllText($env:OUT, $line + \"`n\", (New-Object Text.UTF8Encoding $false))\r\n";
+
+        /// Returns (tempdir guard, stub bin dir, output file, hostile project dir, hostile config dir).
+        fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+            let root = tempfile::tempdir().unwrap();
+            let base = root.path().to_path_buf();
+            let bin = base.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("claude.ps1"), STUB).unwrap();
+            let project = base.join(format!("proj {HOSTILE_NAME}"));
+            std::fs::create_dir_all(&project).unwrap();
+            let config = base.join(format!("cfg {HOSTILE_NAME}"));
+            let out = base.join("out.txt");
+            (root, bin, out, project, config)
+        }
+
+        /// Writes `content` with `write_script` (so the real BOM/encoding path
+        /// is exercised) and runs it with `powershell.exe -File`.
+        fn run(content: &str, bin: &Path, out: &Path) -> Vec<String> {
+            let script = write_script(content, ScriptKind::PowerShell).unwrap();
+            let path = format!("{};{}", bin.display(), std::env::var("PATH").unwrap());
+            let output = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&script)
+                .env("PATH", path)
+                .env("OUT", out)
+                .current_dir(std::env::temp_dir())
+                .output()
+                .unwrap();
+            std::fs::remove_file(&script).ok();
+            assert!(
+                output.status.success(),
+                "script failed: {content}\nstderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::fs::read_to_string(out)
+                .unwrap_or_default()
+                .lines()
+                .map(String::from)
+                .collect()
+        }
+
+        /// Asserts the stub ran exactly once, inside `project`, with the env
+        /// verbatim. The cwd is compared by filesystem identity: the runner's
+        /// temp dir may be an 8.3 short name (`RUNNER~1`) that `Get-Location`
+        /// reports in long form (`runneradmin`) after `Set-Location`.
+        fn assert_ran_in_project(lines: &[String], project: &Path, cd: &str) {
+            assert_eq!(lines.len(), 1, "stub should run once: {lines:?}");
+            let (cwd, env) = lines[0].split_once('|').unwrap();
+            assert_eq!(
+                std::fs::canonicalize(cwd).unwrap(),
+                std::fs::canonicalize(project).unwrap(),
+                "stub ran in the wrong dir: {cwd}"
+            );
+            assert_eq!(env, format!("{cd}|{cd}\\gh|"));
+        }
+
+        #[test]
+        fn test_should_deliver_hostile_cwd_and_env_when_running_launch_script_via_powershell() {
+            let (_g, bin, out, project, config) = setup();
+            let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
+            let lines = run(&build_script(ScriptKind::PowerShell, &cd, &pp), &bin, &out);
+            assert_ran_in_project(&lines, &project, &cd);
+        }
+
+        #[test]
+        fn test_should_deliver_env_when_running_relogin_script_via_powershell() {
+            let (_g, bin, out, _project, config) = setup();
+            let cd = config.to_string_lossy();
+            let lines = run(
+                &build_relogin_script(ScriptKind::PowerShell, &cd),
+                &bin,
+                &out,
+            );
+            // No Set-Location here: drop the cwd column, it is whatever the
+            // runner's temp dir looks like (possibly an 8.3 short name).
+            let tails: Vec<&str> = lines.iter().map(|l| l.split_once('|').unwrap().1).collect();
+            assert_eq!(
+                tails,
+                vec![
+                    format!("{cd}|{cd}\\gh|auth logout"),
+                    format!("{cd}|{cd}\\gh|auth login"),
+                ]
+            );
+        }
+
+        #[test]
+        fn test_should_deliver_hostile_cwd_and_env_when_running_manual_command_via_powershell() {
+            let (_g, bin, out, project, config) = setup();
+            let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
+            let lines = run(
+                &manual_command(ScriptKind::PowerShell, &cd, &pp),
+                &bin,
+                &out,
+            );
+            assert_ran_in_project(&lines, &project, &cd);
         }
     }
 }
