@@ -6,6 +6,8 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-11
+
 ### Fixed
 
 - **Corrupt `config.json` is never overwritten**: a config that fails to parse
@@ -250,6 +252,13 @@ each isolated in its own `CLAUDE_CONFIG_DIR`.
 - Ephemeral scripts are created atomically with restrictive permissions and
   unguessable names (`tempfile`).
 
+[Unreleased]: https://github.com/Lukeneo12/claude-multi/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Lukeneo12/claude-multi/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/Lukeneo12/claude-multi/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/Lukeneo12/claude-multi/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Lukeneo12/claude-multi/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Lukeneo12/claude-multi/compare/v0.1.0...v0.2.0
