@@ -78,23 +78,53 @@ pub fn builtin_adapters() -> Vec<TerminalAdapter> {
         ));
     }
     #[cfg(target_os = "windows")]
-    {
-        v.push(adapter(
+    v.extend(windows_adapters());
+    v
+}
+
+/// `powershell.exe` flags shared by every Windows adapter. `-ExecutionPolicy
+/// Bypass` applies to this process only (never persisted): stock Windows
+/// clients default to `Restricted`, which refuses to run any `.ps1`, including
+/// our own temp script. A Group Policy-enforced policy still wins and can't be
+/// overridden from the command line. `-File` must come last: anything after it
+/// is passed to the script.
+///
+/// The flag works by setting `PSExecutionPolicyPreference=Bypass`, which
+/// PowerShell re-reads on every script load and child processes inherit. The
+/// launch script deliberately leaves it set: `claude` installed via npm is a
+/// `claude.ps1` shim that `Restricted` would block in the same window, as would
+/// any script the user runs in the `-NoExit` session afterwards.
+const POWERSHELL_SCRIPT_ARGS: &[&str] = &[
+    "-NoExit",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "{{script}}",
+];
+
+/// The Windows adapters, defined outside the `#[cfg]` so their command lines
+/// are unit-tested on every OS.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn windows_adapters() -> Vec<TerminalAdapter> {
+    let wt_args: Vec<&str> = std::iter::once("powershell")
+        .chain(POWERSHELL_SCRIPT_ARGS.iter().copied())
+        .collect();
+    vec![
+        adapter(
             "wt",
             "Windows Terminal",
             "wt.exe",
-            &["powershell", "-NoExit", "-File", "{{script}}"],
+            &wt_args,
             ScriptKind::PowerShell,
-        ));
-        v.push(adapter(
+        ),
+        adapter(
             "powershell",
             "PowerShell",
             "powershell.exe",
-            &["-NoExit", "-File", "{{script}}"],
+            POWERSHELL_SCRIPT_ARGS,
             ScriptKind::PowerShell,
-        ));
-    }
-    v
+        ),
+    ]
 }
 
 pub fn find_adapter(id: &str) -> Option<TerminalAdapter> {
@@ -133,6 +163,36 @@ mod tests {
         ];
         let out = render_args(&tmpl, "/tmp/s.sh", "/repo");
         assert_eq!(out, vec!["--working-directory=/repo", "/tmp/s.sh"]);
+    }
+
+    #[test]
+    fn test_should_bypass_execution_policy_when_windows_adapters_run_a_script() {
+        // Stock Windows clients default to `Restricted`, which refuses any .ps1.
+        for a in windows_adapters() {
+            let args: Vec<&str> = a.args.iter().map(String::as_str).collect();
+            let file = args.iter().position(|x| *x == "-File").expect("-File");
+            let pos = args
+                .windows(2)
+                .position(|w| w == ["-ExecutionPolicy", "Bypass"])
+                .unwrap_or_else(|| panic!("{} lacks -ExecutionPolicy Bypass: {args:?}", a.id));
+            assert!(pos < file, "{}: flags after -File go to the script", a.id);
+            assert_eq!(
+                args.last(),
+                Some(&"{{script}}"),
+                "{}: -File must be last",
+                a.id
+            );
+            assert!(args.contains(&"-NoExit"), "{}: keep the window open", a.id);
+        }
+    }
+
+    #[test]
+    fn test_should_launch_the_same_powershell_flags_when_using_windows_terminal() {
+        let all = windows_adapters();
+        let wt = all.iter().find(|a| a.id == "wt").unwrap();
+        let ps = all.iter().find(|a| a.id == "powershell").unwrap();
+        assert_eq!(wt.args[0], "powershell");
+        assert_eq!(wt.args[1..], ps.args[..]);
     }
 
     #[test]

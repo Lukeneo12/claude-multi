@@ -90,7 +90,7 @@ pub fn build_script(kind: ScriptKind, config_dir: &str, project_path: &str) -> S
             let escaped_config = powershell_single_quote_escape(config_dir);
             let escaped_project = powershell_single_quote_escape(project_path);
             format!(
-                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\n{extra_env}Set-Location -LiteralPath '{escaped_project}'\nclaude\n"
+                "$env:CLAUDE_CONFIG_DIR = '{escaped_config}'\n{extra_env}Set-Location -LiteralPath '{escaped_project}' -ErrorAction Stop\nclaude\n"
             )
         }
     }
@@ -209,13 +209,22 @@ fn build_manual(kind: ScriptKind, config_dir: &str, action: ManualAction) -> Str
         },
         ScriptKind::PowerShell => match action {
             ManualAction::Command(project_path) => format!(
-                "{env}; Set-Location -LiteralPath '{}'; claude",
+                "{env}; Set-Location -LiteralPath '{}' -ErrorAction Stop; claude",
                 powershell_single_quote_escape(project_path)
             ),
             ManualAction::Login => format!("{env}; claude"),
             ManualAction::Logout => format!("{env}; claude auth logout"),
             ManualAction::Relogin => format!("{env}; claude auth logout; claude auth login"),
         },
+    }
+}
+
+/// Where the user should paste a manual command built for `kind`: the
+/// PowerShell variant uses `$env:` syntax and fails in `cmd.exe`.
+pub fn manual_paste_hint(kind: ScriptKind) -> &'static str {
+    match kind {
+        ScriptKind::Posix => "any terminal",
+        ScriptKind::PowerShell => "a PowerShell window",
     }
 }
 
@@ -349,6 +358,35 @@ mod tests {
         }
         assert!(scripts[0]
             .contains("Set-Location -LiteralPath 'C:\\p\\\u{2018}\u{2018}x\u{2019}\u{2019}'"));
+    }
+
+    #[test]
+    fn test_should_stop_before_claude_when_powershell_cannot_enter_project() {
+        // POSIX does `cd … || exit 1`; without -ErrorAction Stop a failed
+        // Set-Location is non-terminating and claude starts in the wrong dir.
+        let s = build_script(ScriptKind::PowerShell, r"C:\h", r"C:\repo");
+        let cd = s
+            .find(r"Set-Location -LiteralPath 'C:\repo' -ErrorAction Stop")
+            .unwrap_or_else(|| panic!("{s}"));
+        assert!(cd < s.rfind("claude").unwrap());
+        let m = manual_command(ScriptKind::PowerShell, r"C:\h", r"C:\repo");
+        assert!(
+            m.contains(r"Set-Location -LiteralPath 'C:\repo' -ErrorAction Stop; claude"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn test_should_name_powershell_when_hinting_where_to_paste_windows_commands() {
+        assert_eq!(
+            manual_paste_hint(ScriptKind::PowerShell),
+            "a PowerShell window"
+        );
+    }
+
+    #[test]
+    fn test_should_say_any_terminal_when_hinting_where_to_paste_posix_commands() {
+        assert_eq!(manual_paste_hint(ScriptKind::Posix), "any terminal");
     }
 
     #[test]
@@ -597,7 +635,7 @@ mod tests {
         let env = r"$env:CLAUDE_CONFIG_DIR='C:\Users\u\.claude-dino'; $env:GH_CONFIG_DIR='C:\Users\u\.claude-dino\gh'";
         assert_eq!(
             manual_command(ScriptKind::PowerShell, cd, r"C:\repo"),
-            format!(r"{env}; Set-Location -LiteralPath 'C:\repo'; claude")
+            format!(r"{env}; Set-Location -LiteralPath 'C:\repo' -ErrorAction Stop; claude")
         );
         assert_eq!(
             manual_login_command(ScriptKind::PowerShell, cd),
@@ -651,7 +689,7 @@ mod tests {
                 format!(r"$env:CLAUDE_CONFIG_DIR='C:\h\{ps}'; $env:GH_CONFIG_DIR='C:\h\{ps}\gh'");
             assert_eq!(
                 manual_command(ScriptKind::PowerShell, &cd, &pp),
-                format!(r"{env}; Set-Location -LiteralPath 'C:\p\{ps}'; claude"),
+                format!(r"{env}; Set-Location -LiteralPath 'C:\p\{ps}' -ErrorAction Stop; claude"),
                 "command for {raw:?}"
             );
             assert_eq!(
@@ -805,37 +843,101 @@ mod tests {
             (root, bin, out, project, config)
         }
 
+        /// Flags the round-trip tests run scripts with: deterministic (no
+        /// profile, no prompt) and policy-independent.
+        const TEST_FLAGS: &[&str] = &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ];
+
+        /// Flags that run a manual command the way a paste into an interactive
+        /// window does: as a command line, not a script file. The stub is a
+        /// `.ps1`, so the policy must allow it or the negative tests pass
+        /// vacuously; the positive manual test proves it runs.
+        const COMMAND_FLAGS: &[&str] = &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ];
+
         /// Writes `content` with `write_script` (so the real BOM/encoding path
-        /// is exercised) and runs it with `powershell.exe -File`.
-        fn run(content: &str, bin: &Path, out: &Path) -> Vec<String> {
-            let script = write_script(content, ScriptKind::PowerShell).unwrap();
-            let path = format!("{};{}", bin.display(), std::env::var("PATH").unwrap());
-            let output = Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                ])
-                .arg(&script)
+        /// is exercised), runs `program args… <script>` with the stub first on
+        /// `PATH` plus `extra_env`, and returns (exited ok, stub output lines,
+        /// stderr). If `args` ends in `-Command`, `content` is passed inline
+        /// instead of as a script file.
+        fn run_with(
+            program: &str,
+            args: &[&str],
+            extra_env: &[(&str, &str)],
+            content: &str,
+            bin: &Path,
+            out: &Path,
+        ) -> (bool, Vec<String>, String) {
+            let inline = args.last() == Some(&"-Command");
+            let script = (!inline).then(|| write_script(content, ScriptKind::PowerShell).unwrap());
+            let path = format!(
+                "{};{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            let target = script
+                .as_ref()
+                .map_or_else(|| content.into(), |p| p.as_os_str().to_owned());
+            let output = Command::new(program)
+                .args(args)
+                .arg(target)
                 .env("PATH", path)
                 .env("OUT", out)
+                .envs(extra_env.iter().copied())
                 .current_dir(std::env::temp_dir())
                 .output()
                 .unwrap();
-            std::fs::remove_file(&script).ok();
-            assert!(
-                output.status.success(),
-                "script failed: {content}\nstderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            std::fs::read_to_string(out)
+            if let Some(p) = &script {
+                std::fs::remove_file(p).ok();
+            }
+            let lines = std::fs::read_to_string(out)
                 .unwrap_or_default()
                 .lines()
                 .map(String::from)
+                .collect();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            (output.status.success(), lines, stderr)
+        }
+
+        /// `run_with` the given flags; the script must succeed.
+        fn run_via(flags: &[&str], content: &str, bin: &Path, out: &Path) -> Vec<String> {
+            let (ok, lines, stderr) = run_with("powershell.exe", flags, &[], content, bin, out);
+            assert!(ok, "script failed: {content}\nstderr: {stderr}");
+            lines
+        }
+
+        /// `run_via` the script-file test flags.
+        fn run(content: &str, bin: &Path, out: &Path) -> Vec<String> {
+            run_via(TEST_FLAGS, content, bin, out)
+        }
+
+        /// The `powershell` adapter's real flags, minus `-NoExit` (it would
+        /// keep the test process waiting) and the trailing `{{script}}`.
+        fn adapter_flags() -> Vec<String> {
+            let a = crate::adapters::windows_adapters()
+                .into_iter()
+                .find(|a| a.id == "powershell")
+                .unwrap();
+            assert_eq!(a.command, "powershell.exe");
+            a.args
+                .into_iter()
+                .filter(|x| x != "-NoExit" && x != "{{script}}")
                 .collect()
         }
+
+        /// Simulates a stock Windows client: the process-scope policy env var
+        /// set to `Restricted`, which refuses every .ps1.
+        const RESTRICTED: &[(&str, &str)] = &[("PSExecutionPolicyPreference", "Restricted")];
 
         /// Asserts the stub ran exactly once, inside `project`, with the env
         /// verbatim. The cwd is compared by filesystem identity: the runner's
@@ -858,6 +960,64 @@ mod tests {
             let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
             let lines = run(&build_script(ScriptKind::PowerShell, &cd, &pp), &bin, &out);
             assert_ran_in_project(&lines, &project, &cd);
+        }
+
+        #[test]
+        fn test_should_refuse_script_when_policy_restricted_and_no_bypass() {
+            // Control for the next test: proves the Restricted simulation bites.
+            let (_g, bin, out, project, config) = setup();
+            let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
+            let flags = ["-NoProfile", "-NonInteractive", "-File"];
+            let script = build_script(ScriptKind::PowerShell, &cd, &pp);
+            let (ok, lines, stderr) =
+                run_with("powershell.exe", &flags, RESTRICTED, &script, &bin, &out);
+            assert!(!ok && lines.is_empty(), "Restricted should refuse the .ps1");
+            // The error id is not localized: proves the refusal is the policy,
+            // not some unrelated failure.
+            assert!(
+                stderr.contains("UnauthorizedAccess"),
+                "refused for another reason: {stderr}"
+            );
+        }
+
+        #[test]
+        fn test_should_run_launch_script_when_using_adapter_flags_under_restricted_policy() {
+            let (_g, bin, out, project, config) = setup();
+            let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
+            let flags = adapter_flags();
+            let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+            let script = build_script(ScriptKind::PowerShell, &cd, &pp);
+            let (ok, lines, stderr) =
+                run_with("powershell.exe", &flags, RESTRICTED, &script, &bin, &out);
+            assert!(ok, "adapter command refused the script: {stderr}");
+            assert_ran_in_project(&lines, &project, &cd);
+        }
+
+        #[test]
+        fn test_should_not_run_claude_when_launch_script_project_dir_is_missing() {
+            let (_g, bin, out, project, config) = setup();
+            let cd = config.to_string_lossy();
+            let gone = project.join("deleted");
+            let script = build_script(ScriptKind::PowerShell, &cd, &gone.to_string_lossy());
+            let (ok, lines, _) = run_with("powershell.exe", TEST_FLAGS, &[], &script, &bin, &out);
+            assert!(!ok, "a failed Set-Location must fail the script");
+            assert!(
+                lines.is_empty(),
+                "claude ran outside the project: {lines:?}"
+            );
+        }
+
+        #[test]
+        fn test_should_not_run_claude_when_manual_command_project_dir_is_missing() {
+            let (_g, bin, out, project, config) = setup();
+            let cd = config.to_string_lossy();
+            let gone = project.join("deleted");
+            let cmd = manual_command(ScriptKind::PowerShell, &cd, &gone.to_string_lossy());
+            let (_, lines, _) = run_with("powershell.exe", COMMAND_FLAGS, &[], &cmd, &bin, &out);
+            assert!(
+                lines.is_empty(),
+                "claude ran outside the project: {lines:?}"
+            );
         }
 
         #[test]
@@ -885,7 +1045,8 @@ mod tests {
         fn test_should_deliver_hostile_cwd_and_env_when_running_manual_command_via_powershell() {
             let (_g, bin, out, project, config) = setup();
             let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
-            let lines = run(
+            let lines = run_via(
+                COMMAND_FLAGS,
                 &manual_command(ScriptKind::PowerShell, &cd, &pp),
                 &bin,
                 &out,

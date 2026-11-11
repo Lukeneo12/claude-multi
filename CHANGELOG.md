@@ -25,6 +25,19 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `‚` `‛`, which PowerShell also treats as string delimiters) are escaped in
   scripts and manual commands, and `Set-Location -LiteralPath` keeps `[` `]`
   in project paths from being read as wildcards.
+- **Windows launches work under the default execution policy**: the Windows
+  Terminal and PowerShell adapters pass `-ExecutionPolicy Bypass` (this process
+  only, never persisted). Stock Windows clients default to `Restricted`, which
+  refused to run the app's `.ps1` launch scripts. The session window now loads
+  your `$PROFILE` and runs scripts unrestricted. A policy enforced by Group
+  Policy still wins: there, paste the manual command instead.
+- **A missing project dir no longer starts Claude elsewhere on Windows**:
+  `Set-Location` now uses `-ErrorAction Stop` in the launch script and the
+  manual command, matching POSIX `cd … || exit 1`, instead of starting `claude`
+  in whatever directory the terminal opened in.
+- **The clipboard fallback says where to paste**: on Windows the message asks
+  for a PowerShell window (the command uses `$env:` syntax, which `cmd.exe`
+  rejects) instead of "any terminal".
 - **Unreadable config is not treated as corrupt**: a permission or transient
   I/O error while reading `config.json` is reported as such, without creating
   a backup or suggesting to delete the file.
