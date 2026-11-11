@@ -88,6 +88,12 @@ pub fn builtin_adapters() -> Vec<TerminalAdapter> {
 /// our own temp script. A Group Policy-enforced policy still wins and can't be
 /// overridden from the command line. `-File` must come last: anything after it
 /// is passed to the script.
+///
+/// The flag works by setting `PSExecutionPolicyPreference=Bypass`, which
+/// PowerShell re-reads on every script load and child processes inherit. The
+/// launch script deliberately leaves it set: `claude` installed via npm is a
+/// `claude.ps1` shim that `Restricted` would block in the same window, as would
+/// any script the user runs in the `-NoExit` session afterwards.
 const POWERSHELL_SCRIPT_ARGS: &[&str] = &[
     "-NoExit",
     "-ExecutionPolicy",

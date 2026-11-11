@@ -28,7 +28,9 @@ adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Windows launches work under the default execution policy**: the Windows
   Terminal and PowerShell adapters pass `-ExecutionPolicy Bypass` (this process
   only, never persisted). Stock Windows clients default to `Restricted`, which
-  refused to run the app's `.ps1` launch scripts.
+  refused to run the app's `.ps1` launch scripts. The session window now loads
+  your `$PROFILE` and runs scripts unrestricted. A policy enforced by Group
+  Policy still wins: there, paste the manual command instead.
 - **A missing project dir no longer starts Claude elsewhere on Windows**:
   `Set-Location` now uses `-ErrorAction Stop` in the launch script and the
   manual command, matching POSIX `cd … || exit 1`, instead of starting `claude`

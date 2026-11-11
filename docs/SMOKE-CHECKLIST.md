@@ -126,6 +126,14 @@ See "Warp Adapter Decision" below.
 - **Default execution policy:** on a machine where `Get-ExecutionPolicy` prints
   `Restricted` (the stock Windows client default), launching a session opens
   Claude, with no "running scripts is disabled on this system" error.
+  - Known side effects of `-ExecutionPolicy Bypass` (by design): the user's
+    `$PROFILE` now loads in the session window, and `Bypass` stays in effect
+    for that window and the processes it starts (`claude`, scripts run there).
+  - Known limitation: if Group Policy enforces the execution policy
+    (`Get-ExecutionPolicy -List` shows `MachinePolicy`/`UserPolicy` set), the
+    launch window still shows the "running scripts is disabled" error and the
+    app does not detect it. The manual command (paste into a PowerShell
+    window) still works there, since it is not a script file.
 
 ---
 

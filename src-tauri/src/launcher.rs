@@ -853,9 +853,23 @@ mod tests {
             "-File",
         ];
 
+        /// Flags that run a manual command the way a paste into an interactive
+        /// window does: as a command line, not a script file. The stub is a
+        /// `.ps1`, so the policy must allow it or the negative tests pass
+        /// vacuously; the positive manual test proves it runs.
+        const COMMAND_FLAGS: &[&str] = &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ];
+
         /// Writes `content` with `write_script` (so the real BOM/encoding path
         /// is exercised), runs `program args… <script>` with the stub first on
-        /// `PATH` plus `extra_env`, and returns (exited ok, stub output lines).
+        /// `PATH` plus `extra_env`, and returns (exited ok, stub output lines,
+        /// stderr). If `args` ends in `-Command`, `content` is passed inline
+        /// instead of as a script file.
         fn run_with(
             program: &str,
             args: &[&str],
@@ -864,22 +878,28 @@ mod tests {
             bin: &Path,
             out: &Path,
         ) -> (bool, Vec<String>, String) {
-            let script = write_script(content, ScriptKind::PowerShell).unwrap();
+            let inline = args.last() == Some(&"-Command");
+            let script = (!inline).then(|| write_script(content, ScriptKind::PowerShell).unwrap());
             let path = format!(
                 "{};{}",
                 bin.display(),
                 std::env::var("PATH").unwrap_or_default()
             );
+            let target = script
+                .as_ref()
+                .map_or_else(|| content.into(), |p| p.as_os_str().to_owned());
             let output = Command::new(program)
                 .args(args)
-                .arg(&script)
+                .arg(target)
                 .env("PATH", path)
                 .env("OUT", out)
                 .envs(extra_env.iter().copied())
                 .current_dir(std::env::temp_dir())
                 .output()
                 .unwrap();
-            std::fs::remove_file(&script).ok();
+            if let Some(p) = &script {
+                std::fs::remove_file(p).ok();
+            }
             let lines = std::fs::read_to_string(out)
                 .unwrap_or_default()
                 .lines()
@@ -889,12 +909,16 @@ mod tests {
             (output.status.success(), lines, stderr)
         }
 
-        /// `run_with` the test flags; the script must succeed.
-        fn run(content: &str, bin: &Path, out: &Path) -> Vec<String> {
-            let (ok, lines, stderr) =
-                run_with("powershell.exe", TEST_FLAGS, &[], content, bin, out);
+        /// `run_with` the given flags; the script must succeed.
+        fn run_via(flags: &[&str], content: &str, bin: &Path, out: &Path) -> Vec<String> {
+            let (ok, lines, stderr) = run_with("powershell.exe", flags, &[], content, bin, out);
             assert!(ok, "script failed: {content}\nstderr: {stderr}");
             lines
+        }
+
+        /// `run_via` the script-file test flags.
+        fn run(content: &str, bin: &Path, out: &Path) -> Vec<String> {
+            run_via(TEST_FLAGS, content, bin, out)
         }
 
         /// The `powershell` adapter's real flags, minus `-NoExit` (it would
@@ -945,9 +969,15 @@ mod tests {
             let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
             let flags = ["-NoProfile", "-NonInteractive", "-File"];
             let script = build_script(ScriptKind::PowerShell, &cd, &pp);
-            let (ok, lines, _) =
+            let (ok, lines, stderr) =
                 run_with("powershell.exe", &flags, RESTRICTED, &script, &bin, &out);
             assert!(!ok && lines.is_empty(), "Restricted should refuse the .ps1");
+            // The error id is not localized: proves the refusal is the policy,
+            // not some unrelated failure.
+            assert!(
+                stderr.contains("UnauthorizedAccess"),
+                "refused for another reason: {stderr}"
+            );
         }
 
         #[test]
@@ -983,7 +1013,7 @@ mod tests {
             let cd = config.to_string_lossy();
             let gone = project.join("deleted");
             let cmd = manual_command(ScriptKind::PowerShell, &cd, &gone.to_string_lossy());
-            let (_, lines, _) = run_with("powershell.exe", TEST_FLAGS, &[], &cmd, &bin, &out);
+            let (_, lines, _) = run_with("powershell.exe", COMMAND_FLAGS, &[], &cmd, &bin, &out);
             assert!(
                 lines.is_empty(),
                 "claude ran outside the project: {lines:?}"
@@ -1015,7 +1045,8 @@ mod tests {
         fn test_should_deliver_hostile_cwd_and_env_when_running_manual_command_via_powershell() {
             let (_g, bin, out, project, config) = setup();
             let (cd, pp) = (config.to_string_lossy(), project.to_string_lossy());
-            let lines = run(
+            let lines = run_via(
+                COMMAND_FLAGS,
                 &manual_command(ScriptKind::PowerShell, &cd, &pp),
                 &bin,
                 &out,
